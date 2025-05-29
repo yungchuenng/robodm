@@ -50,6 +50,8 @@ class Trajectory:
         cache_dir: Optional[Text] = "/tmp/fog_x/cache/",
         lossy_compression: bool = True,
         feature_name_separator: Text = "/",
+        filesystem: Optional[Any] = None,
+        time_provider: Optional[Any] = None,
     ) -> None:
         """
         Args:
@@ -63,20 +65,27 @@ class Trajectory:
             feature_name_separator (Text, optional):
                 Delimiter to separate feature names in the container file.
                 Defaults to "/".
+            filesystem: Optional filesystem interface for dependency injection
+            time_provider: Optional time provider interface for dependency injection
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
+        
+        # Dependency injection - set early so they're available during init
+        self._filesystem = filesystem
+        self._time_provider = time_provider
+        
         # self.cache_file_name = "/tmp/fog_" + os.path.basename(self.path) + ".cache"
         # use hex hash of the path for the cache file name
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir, exist_ok=True)
+        if not self._exists(cache_dir):
+            self._makedirs(cache_dir, exist_ok=True)
         hex_hash = hex(abs(hash(self.path)))[2:]
         self.cache_file_name = cache_dir + hex_hash + ".cache"
         # self.cache_file_name = cache_dir + os.path.basename(self.path) + ".cache"
         self.feature_name_to_stream = {}  # feature_name: stream
         self.feature_name_to_feature_type = {}  # feature_name: feature_type
         self.trajectory_data = None  # trajectory_data
-        self.start_time = time.time()
+        self.start_time = self._time()
         self.mode = mode
         self.stream_id_to_info = {}  # stream_id: StreamInfo
         self.is_closed = False
@@ -89,21 +98,51 @@ class Trajectory:
         # check if the path exists
         # if not, create a new file and start data collection
         if self.mode == "w":
-            if not os.path.exists(self.path):
-                os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            if not self._exists(self.path):
+                self._makedirs(os.path.dirname(self.path), exist_ok=True)
             try:
                 self.container_file = av.open(self.path, mode="w", format="matroska")
             except Exception as e:
                 logger.error(f"error creating the trajectory file: {e}")
                 raise
         elif self.mode == "r":
-            if not os.path.exists(self.path):
+            if not self._exists(self.path):
                 raise FileNotFoundError(f"{self.path} does not exist")
         else:
             raise ValueError(f"Invalid mode {self.mode}, must be 'r' or 'w'")
 
+    def _exists(self, path: str) -> bool:
+        """File existence check with dependency injection support."""
+        if self._filesystem:
+            return self._filesystem.exists(path)
+        return os.path.exists(path)
+    
+    def _makedirs(self, path: str, exist_ok: bool = False) -> None:
+        """Directory creation with dependency injection support."""
+        if self._filesystem:
+            return self._filesystem.makedirs(path, exist_ok=exist_ok)
+        return os.makedirs(path, exist_ok=exist_ok)
+    
+    def _remove(self, path: str) -> None:
+        """File removal with dependency injection support."""
+        if self._filesystem:
+            return self._filesystem.remove(path)
+        return os.remove(path)
+    
+    def _rename(self, src: str, dst: str) -> None:
+        """File rename with dependency injection support."""
+        if self._filesystem:
+            return self._filesystem.rename(src, dst)
+        return os.rename(src, dst)
+    
+    def _time(self) -> float:
+        """Time retrieval with dependency injection support."""
+        if self._time_provider:
+            return self._time_provider.time()
+        return time.time()
+
     def _get_current_timestamp(self):
-        current_time = (time.time() - self.start_time) * 1000
+        current_time = (self._time() - self.start_time) * 1000
         return current_time
 
     def __len__(self):
@@ -146,7 +185,10 @@ class Trajectory:
             pass  # This exception is expected and means the encoder is fully flushed
 
         self.container_file.close()
+        
+        # Only attempt transcoding if file exists and has content
         if compact:
+            print("Transcoding the pickled images")
             # After closing, re-read from the cache to encode pickled data to images
             self._transcode_pickled_images(ending_timestamp=ts)
         self.trajectory_data = None
@@ -171,8 +213,8 @@ class Trajectory:
         # )
         # async def load_async(self, save_to_cache=True, return_h5=False):
         np_cache = None
-        if not os.path.exists(self.cache_file_name):
-            logger.debug(f"Loading the container file {self.path}, saving to cache {self.cache_file_name}")
+        if not self._exists(self.cache_file_name):
+            logger.warn(f"Loading the container file {self.path}, saving to cache {self.cache_file_name}")
             np_cache = self._load_from_container()
             if save_to_cache:
                 # await self._async_write_to_cache(np_cache)
@@ -418,14 +460,23 @@ class Trajectory:
             """
             length = 0
             for packet in container.demux([stream]):
+                print(packet)
                 if packet.dts is not None:
                     length += 1
             return length
         
         container_to_get_length = av.open(self.path, mode="r", format="matroska")
         streams = container_to_get_length.streams
-        length = _get_length_of_stream(container_to_get_length, streams[0])
-        logger.debug(f"Length of the stream is {length}")
+        
+        # Handle case where no streams exist
+        # if not streams:
+        #     logger.warning(f"No streams found in container file {self.path}")
+        #     container_to_get_length.close()
+        #     return {}
+            
+        for stream in streams:
+            length = _get_length_of_stream(container_to_get_length, stream)
+            logger.warn(f"Length of the stream is {length}")
         container_to_get_length.close()
         
         container = av.open(self.path, mode="r", format="matroska")
@@ -536,7 +587,7 @@ class Trajectory:
 
         # Move the original file to a temporary location
         temp_path = self.path + ".temp"
-        os.rename(self.path, temp_path)
+        self._rename(self.path, temp_path)
 
         # Open the original container for reading
         original_container = av.open(temp_path, mode="r", format="matroska")
@@ -605,7 +656,7 @@ class Trajectory:
                 new_container.mux(packet)
 
         original_container.close()
-        os.remove(temp_path)
+        self._remove(temp_path)
 
         # Reopen the new container for further writing new data
         self.container_file = new_container
@@ -619,7 +670,7 @@ class Trajectory:
             self.load()
 
         # directly copy the cache file to the hdf5 file
-        os.rename(self.cache_file_name, path)
+        self._rename(self.cache_file_name, path)
 
     def _encode_frame(self, data: Any, stream: Any, timestamp: int) -> List[av.Packet]:
         """
@@ -675,7 +726,7 @@ class Trajectory:
 
             # Move the original file to a temporary location
             temp_path = self.path + ".temp"
-            os.rename(self.path, temp_path)
+            self._rename(self.path, temp_path)
 
             # Open the original container for reading
             original_container = av.open(temp_path, mode="r", format="matroska")
@@ -727,7 +778,7 @@ class Trajectory:
                     pass
 
             original_container.close()
-            os.remove(temp_path)
+            self._remove(temp_path)
 
             # Reopen the new container for writing new data
             self.container_file = new_container
@@ -764,7 +815,7 @@ class Trajectory:
 
     def _create_frame(self, image_array, stream):
         frame = av.VideoFrame.from_ndarray(np.array(image_array, dtype=np.uint8))
-        frame.pict_type = "NONE"
+        # frame.pict_type = 0
         return frame
 
     def _create_frame_depth(self, image_array, stream):
@@ -777,7 +828,7 @@ class Trajectory:
         if len(image_array.shape) == 3:
             image_array = image_array[:, :, 0]
         frame = av.VideoFrame.from_ndarray(image_array, format="gray")
-        frame.pict_type = "NONE"
+        frame.pict_type = 0
         frame.time_base = stream.time_base
         return frame
 

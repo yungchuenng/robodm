@@ -68,6 +68,8 @@ class FeatureType:
             dtype = "float64"
         if dtype == "float":  # fix inferred type
             dtype = "float32"
+        if dtype == "int":  # fix inferred type
+            dtype = "int32"
         if dtype == "object":
             dtype = "string" 
         if dtype not in SUPPORTED_DTYPES:
