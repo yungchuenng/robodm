@@ -22,14 +22,20 @@ def debug_trajectory_creation():
             "observation/image": [
                 np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
                 np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
+                np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
+                np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
+                np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
             ],
             "action": [
                 np.random.random(7).astype(np.float32),
                 np.random.random(7).astype(np.float32),
-            ],
+                np.random.random(7).astype(np.float32),
+                np.random.random(7).astype(np.float32),
+                np.random.random(7).astype(np.float32),
+            ]
         }
         
-        print("Creating trajectory from dict of lists...")
+        print("Creating trajectory from dict of lists with lossy_compression=False...")
         try:
             traj = Trajectory.from_dict_of_lists(data, path, lossy_compression=True)
             print(f"Trajectory created successfully")
