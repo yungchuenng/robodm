@@ -3,7 +3,7 @@ import numpy as np
 
 
 class RLDSLoader(BaseLoader):
-    def __init__(self, path, split, batch_size=1, shuffle_buffer=10, shuffling = True):
+    def __init__(self, path, split = "train", batch_size=1, shuffle_buffer=10, shuffling = True):
         super(RLDSLoader, self).__init__(path)
 
         try:
