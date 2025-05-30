@@ -19,7 +19,6 @@ class TrajectoryFactory:
         self,
         path: Text,
         mode: str = "r",
-        cache_dir: Optional[Text] = "/tmp/fog_x/cache/",
         lossy_compression: bool = True,
         feature_name_separator: Text = "/",
     ) -> TrajectoryInterface:
@@ -30,7 +29,6 @@ class TrajectoryFactory:
         trajectory = Trajectory(
             path=path,
             mode=mode,
-            cache_dir=cache_dir,
             lossy_compression=lossy_compression,
             feature_name_separator=feature_name_separator,
             filesystem=self.filesystem,
@@ -47,7 +45,6 @@ default_factory = TrajectoryFactory()
 def create_trajectory(
     path: Text,
     mode: str = "r",
-    cache_dir: Optional[Text] = "/tmp/fog_x/cache/",
     lossy_compression: bool = True,
     feature_name_separator: Text = "/",
 ) -> TrajectoryInterface:
@@ -55,7 +52,6 @@ def create_trajectory(
     return default_factory.create_trajectory(
         path=path,
         mode=mode,
-        cache_dir=cache_dir,
         lossy_compression=lossy_compression,
         feature_name_separator=feature_name_separator,
     ) 

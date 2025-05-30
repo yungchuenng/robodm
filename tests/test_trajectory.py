@@ -52,7 +52,7 @@ class TestTrajectoryFactory:
         path = os.path.join(temp_dir, "test.vla")
         
         # This should work with actual filesystem since we're using defaults
-        traj = factory.create_trajectory(path, mode="w", cache_dir=temp_dir)
+        traj = factory.create_trajectory(path, mode="w")
         assert traj is not None
         assert hasattr(traj, '_filesystem')
         assert hasattr(traj, '_time_provider')
@@ -75,7 +75,7 @@ class TestTrajectoryFactory:
             mock_container = Mock()
             mock_av.return_value = mock_container
             
-            traj = factory.create_trajectory(path, mode="w", cache_dir=temp_dir)
+            traj = factory.create_trajectory(path, mode="w")
             assert traj._filesystem == mock_filesystem
             assert traj._time_provider == mock_time_provider
 
@@ -86,7 +86,7 @@ class TestTrajectory:
     def test_trajectory_creation_write_mode(self, temp_dir):
         """Test trajectory creation in write mode."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="w")
         assert traj.path == path
         assert traj.mode == "w"
         assert not traj.is_closed
@@ -96,12 +96,12 @@ class TestTrajectory:
         """Test trajectory creation in read mode with non-existent file."""
         path = os.path.join(temp_dir, "nonexistent.vla")
         with pytest.raises(FileNotFoundError):
-            Trajectory(path, mode="r", cache_dir=temp_dir)
+            Trajectory(path, mode="r")
     
     def test_add_single_feature(self, temp_dir):
         """Test adding a single feature to trajectory."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="w")
         
         # Add some test data
         image_data = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
@@ -118,7 +118,7 @@ class TestTrajectory:
     def test_add_by_dict(self, temp_dir):
         """Test adding features via dictionary."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="w")
         
         data = {
             "observation": {
@@ -169,7 +169,7 @@ class TestTrajectory:
         )
         
         # Read back the data
-        traj_read = Trajectory(path, mode="r", cache_dir=temp_dir)
+        traj_read = Trajectory(path, mode="r")
         loaded_data = traj_read.load()
         
         # Verify data structure
@@ -197,7 +197,7 @@ class TestTrajectory:
         )
         
         # Read back the data
-        traj = Trajectory(path, mode="r", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="r")
         
         # Test __getitem__ access
         image_data = traj["observation/image"]
@@ -217,16 +217,11 @@ class TestTrajectory:
             lossy_compression=False
         )
         
-        traj = Trajectory(path, mode="r", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="r")
         
         # Test numpy return type
         numpy_data = traj.load(return_type="numpy")
         assert isinstance(numpy_data, dict)
-        
-        # Test cache_name return type
-        cache_name = traj.load(return_type="cache_name")
-        assert isinstance(cache_name, str)
-        assert cache_name.endswith(".cache")
         
         # Test container return type
         container_name = traj.load(return_type="container")
@@ -235,7 +230,7 @@ class TestTrajectory:
     def test_close_behavior(self, temp_dir):
         """Test trajectory close behavior."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", cache_dir=temp_dir)
+        traj = Trajectory(path, mode="w")
         
         # Add some data
         traj.add("test_feature", np.array([1, 2, 3]))
@@ -253,7 +248,7 @@ class TestTrajectory:
         """Test trajectory creation with invalid mode."""
         path = os.path.join(temp_dir, "test.vla")
         with pytest.raises(ValueError, match="Invalid mode"):
-            Trajectory(path, mode="invalid", cache_dir=temp_dir)
+            Trajectory(path, mode="invalid")
     
     def test_dependency_injection(self, mock_filesystem, mock_time_provider, temp_dir):
         """Test that dependency injection works correctly."""
@@ -270,7 +265,7 @@ class TestTrajectory:
             mock_container = Mock()
             mock_av.return_value = mock_container
             
-            traj = factory.create_trajectory("/test/test.vla", mode="w", cache_dir=temp_dir)
+            traj = factory.create_trajectory("/test/test.vla", mode="w")
             
             # Test that filesystem methods are called on mock
             assert traj._exists("/test/test.vla")
@@ -290,7 +285,7 @@ class TestTrajectoryIntegration:
         path = os.path.join(temp_dir, "integration_test.vla")
         
         # Create and populate trajectory
-        traj_write = Trajectory(path, mode="w", cache_dir=temp_dir)
+        traj_write = Trajectory(path, mode="w")
         
         for i in range(10):
             data = {
@@ -306,7 +301,7 @@ class TestTrajectoryIntegration:
         traj_write.close()
         
         # Read back and verify
-        traj_read = Trajectory(path, mode="r", cache_dir=temp_dir)
+        traj_read = Trajectory(path, mode="r")
         loaded_data = traj_read.load()
         
         # Verify structure and dimensions

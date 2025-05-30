@@ -47,7 +47,6 @@ class Trajectory:
         self,
         path: Text,
         mode="r",
-        cache_dir: Optional[Text] = "/tmp/fog_x/cache/",
         lossy_compression: bool = True,
         feature_name_separator: Text = "/",
         filesystem: Optional[Any] = None,
@@ -57,11 +56,7 @@ class Trajectory:
         Args:
             path (Text): path to the trajectory file
             mode (Text, optional):  mode of the file, "r" for read and "w" for write
-            num_pre_initialized_h264_streams (int, optional):
-                Number of pre-initialized H.264 video streams to use when adding new features.
-                we pre initialize a configurable number of H.264 video streams to avoid the overhead of creating new streams for each feature.
-                otherwise we need to remux everytime
-            . Defaults to 5.
+            lossy_compression (bool, optional): whether to use lossy compression. Defaults to True.
             feature_name_separator (Text, optional):
                 Delimiter to separate feature names in the container file.
                 Defaults to "/".
@@ -75,13 +70,6 @@ class Trajectory:
         self._filesystem = filesystem
         self._time_provider = time_provider
         
-        # self.cache_file_name = "/tmp/fog_" + os.path.basename(self.path) + ".cache"
-        # use hex hash of the path for the cache file name
-        if not self._exists(cache_dir):
-            self._makedirs(cache_dir, exist_ok=True)
-        hex_hash = hex(abs(hash(self.path)))[2:]
-        self.cache_file_name = cache_dir + hex_hash + ".cache"
-        # self.cache_file_name = cache_dir + os.path.basename(self.path) + ".cache"
         self.feature_name_to_stream = {}  # feature_name: stream
         self.feature_name_to_feature_type = {}  # feature_name: feature_type
         self.trajectory_data = None  # trajectory_data
@@ -91,9 +79,6 @@ class Trajectory:
         self.is_closed = False
         self.lossy_compression = lossy_compression
         self.pending_write_tasks = []  # List to keep track of pending write tasks
-        # self.cache_write_lock = asyncio.Lock()
-        # self.cache_write_task = None
-        # self.executor = ThreadPoolExecutor(max_workers=1)
 
         # check if the path exists
         # if not, create a new file and start data collection
@@ -214,73 +199,24 @@ class Trajectory:
         self.is_closed = True
         logger.debug("Trajectory closed successfully")
 
-    def load(self, save_to_cache=True, return_type="numpy"):
+    def load(self, return_type="numpy"):
         """
-        Load the trajectory data.
+        Load the trajectory data directly from the container file.
 
         Args:
-            mode (str): "cache" to use cached data if available, "no_cache" to always load from container.
-            return_h5 (bool): If True, return h5py.File object instead of numpy arrays.
+            return_type (str): "numpy" to return numpy arrays, "container" to return container path.
 
         Returns:
-            dict: A dictionary of numpy arrays if return_h5 is False, otherwise an h5py.File object.
+            dict: A dictionary of numpy arrays or container path based on return_type.
         """
-
-        # uncomment the following line to use async
-        # return asyncio.get_event_loop().run_until_complete(
-        #     self.load_async(save_to_cache=save_to_cache, return_h5=return_h5)
-        # )
-        # async def load_async(self, save_to_cache=True, return_h5=False):
-        np_cache = None
-        if not self._exists(self.cache_file_name):
-            logger.debug(f"Loading the container file {self.path}, saving to cache {self.cache_file_name}")
-            np_cache = self._load_from_container()
-            if save_to_cache:
-                # await self._async_write_to_cache(np_cache)
-                try:
-                    self._write_to_cache(np_cache)
-                except Exception as e:
-                    logger.error(f"Error writing to cache file {self.cache_file_name}: {e}")
-                    return np_cache
         
-        if return_type =="hdf5":
-            return h5py.File(self.cache_file_name, "r")
-        elif return_type == "numpy":
-            if not np_cache:
-                try:
-                    with h5py.File(self.cache_file_name, "r") as h5_cache:
-                        np_cache = recursively_read_hdf5_group(h5_cache)
-                except Exception as e:
-                    logger.error(f"Error loading cache file {self.cache_file_name}: {e}, reading from container")
-                    np_cache = self._load_from_container()
+        if return_type == "numpy":
+            np_cache = self._load_from_container()
             return np_cache
-        elif return_type == "cache_name":
-            return self.cache_file_name
         elif return_type == "container":
             return self.path
-        elif return_type == "tensor":
-            import tensorflow as tf
-            def _convert_h5_cache_to_tensor(h5_cache):
-                output_tf_traj = {}
-                for key in h5_cache:
-                    # hierarhical 
-                    if type(h5_cache[key]) == h5py._hl.group.Group:
-                        for sub_key in h5_cache[key]:
-                            if key not in output_tf_traj:
-                                output_tf_traj[key] = {}
-                            output_tf_traj[key][sub_key] = tf.convert_to_tensor(h5_cache[key][sub_key])
-                    elif type(h5_cache[key]) == h5py._hl.dataset.Dataset:
-                        output_tf_traj[key] = tf.convert_to_tensor(h5_cache[key])
-                return output_tf_traj
-            with h5py.File(self.cache_file_name, 'r') as h5_cache:
-                # Step 2: Access the dataset within the file
-                # Assume the dataset is named 'dataset_name'
-                output_traj = _convert_h5_cache_to_tensor(h5_cache)
-            return output_traj
         else:
-            raise ValueError(f"Invalid return_type {return_type}")
-            
-            
+            raise ValueError(f"Invalid return_type {return_type}. Supported: 'numpy', 'container'")
 
     def init_feature_streams(self, feature_spec: Dict):
         """
@@ -455,19 +391,9 @@ class Trajectory:
         traj.close()
         return traj
 
-    def _load_from_cache(self):
-        """
-        load the cached file with entire vla trajctory
-        """
-        h5_cache = h5py.File(self.cache_file_name, "r")
-        return h5_cache
-
     def _load_from_container(self):
         """
         Load the container file with the entire VLA trajectory using multi-processing for image streams.
-        
-        args:
-            save_to_cache: save the decoded data to the cache file
         
         returns:
             np_cache: dictionary with the decoded data
@@ -548,36 +474,6 @@ class Trajectory:
 
         return np_cache
 
-    # async def _async_write_to_cache(self, np_cache):
-    #     async with self.cache_write_lock:
-    #         await asyncio.get_event_loop().run_in_executor(
-    #             self.executor,
-    #             self._write_to_cache,
-    #             np_cache
-    #         )
-
-    def _write_to_cache(self, np_cache):
-        try:
-            h5_cache = h5py.File(self.cache_file_name, "w")
-        except Exception as e:
-            logger.error(f"Error creating cache file: {e}")
-            raise
-        for feature_name, data in np_cache.items():
-            if data.dtype == object:
-                for i in range(len(data)):
-                    data_type = type(data[i])
-                    if data_type in (str, bytes, np.ndarray):
-                        data[i] = str(data[i])
-                    else:
-                        data[i] = str(data[i])
-                try:
-                    h5_cache.create_dataset(feature_name, data=data)
-                except Exception as e:
-                    logger.error(f"Error saving {feature_name} to cache: {e} with data {data}")
-            else:
-                h5_cache.create_dataset(feature_name, data=data)
-        h5_cache.close()
-                    
     def _transcode_pickled_images(self, ending_timestamp: Optional[int] = None):
         """
         Transcode pickled images into the desired format (e.g., raw or encoded images).
@@ -676,17 +572,6 @@ class Trajectory:
 
         # Reopen the new container for further writing new data
         # self.container_file = av.open(self.path, mode="a", format="matroska")
-
-    def to_hdf5(self, path: Text):
-        """
-        convert the container file to hdf5 file
-        """
-
-        if not self.trajectory_data:
-            self.load()
-
-        # directly copy the cache file to the hdf5 file
-        self._rename(self.cache_file_name, path)
 
     def _encode_frame(self, data: Any, stream: Any, timestamp: int) -> List[av.Packet]:
         """
