@@ -1,18 +1,21 @@
-from fractions import Fraction
-import logging
-import time
-from typing import Any, Dict, List, Optional, Text
-import av
-import numpy as np
-import os
-from fog_x import FeatureType
-import pickle
-from fog_x.utils import recursively_read_hdf5_group
-import h5py
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import logging
+import os
+import pickle
 import sys
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from fractions import Fraction
+from typing import Any, Dict, List, Optional, Text, cast
+
+import av
+import h5py
+import numpy as np
+
+from fog_x import FeatureType
+from fog_x.trajectory_base import TrajectoryInterface
+from fog_x.utils import recursively_read_hdf5_group
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +34,7 @@ def _flatten_dict(d, parent_key="", sep="_"):
 
 
 class StreamInfo:
+
     def __init__(self, feature_name, feature_type, encoding):
         self.feature_name = feature_name
         self.feature_type = feature_type
@@ -45,26 +49,26 @@ class StreamInfo:
 
 class CodecConfig:
     """Configuration class for video codec settings."""
-    
+
     # Default codec configurations
     CODEC_CONFIGS = {
         "rawvideo": {
             "pixel_format": None,  # No pixel format for rawvideo (binary)
-            "options": {}
+            "options": {},
         },
         "libx264": {
             "pixel_format": "yuv420p",
             "options": {
-                "crf": "23",  # Default quality
+                "crf": "23",
                 "preset": "medium"
-            }
+            },  # Default quality
         },
         "libx265": {
-            "pixel_format": "yuv420p", 
+            "pixel_format": "yuv420p",
             "options": {
-                "crf": "28",  # Default quality for HEVC
+                "crf": "28",
                 "preset": "medium"
-            }
+            },  # Default quality for HEVC
         },
         "libaom-av1": {
             "pixel_format": "yuv420p",
@@ -74,32 +78,37 @@ class CodecConfig:
             }
         },
         "ffv1": {
-            "pixel_format": "yuv420p",  # Default, will be adjusted based on content
-            "options": {}
-        }
+            "pixel_format":
+            "yuv420p",  # Default, will be adjusted based on content
+            "options": {},
+        },
     }
-    
-    def __init__(self, codec: str = "auto", options: Dict[str, Any] = None):
+
+    def __init__(self,
+                 codec: str = "auto",
+                 options: Optional[Dict[str, Any]] = None):
         """
         Initialize codec configuration.
-        
+
         Args:
             codec: Video codec to use. Options: "auto", "rawvideo", "libx264", "libx265", "libaom-av1", "ffv1"
             options: Additional codec-specific options
         """
         self.codec = codec
         self.custom_options = options or {}
-        
+
         if codec not in ["auto"] and codec not in self.CODEC_CONFIGS:
-            raise ValueError(f"Unsupported codec: {codec}. Supported: {list(self.CODEC_CONFIGS.keys())}")
-    
+            raise ValueError(
+                f"Unsupported codec: {codec}. Supported: {list(self.CODEC_CONFIGS.keys())}"
+            )
+
     def get_codec_for_feature(self, feature_type: FeatureType) -> str:
         """Determine the appropriate codec for a given feature type."""
 
-            
         # Auto-selection logic based on feature characteristics
         data_shape = feature_type.shape
-        if len(data_shape) >= 2 and data_shape[0] >= 100 and data_shape[1] >= 100:
+        if (data_shape is not None and len(data_shape) >= 2
+                and data_shape[0] >= 100 and data_shape[1] >= 100):
             # Large images - use efficient video codec
             if self.codec != "auto":
                 return self.codec
@@ -107,37 +116,45 @@ class CodecConfig:
         else:
             # Small data or non-image data - use rawvideo
             return "rawvideo"
-    
-    def get_pixel_format(self, codec: str, feature_type: FeatureType) -> Optional[str]:
+
+    def get_pixel_format(self, codec: str,
+                         feature_type: FeatureType) -> Optional[str]:
         """Get appropriate pixel format for codec and feature type."""
         if codec not in self.CODEC_CONFIGS:
             return None
-            
-        base_format = self.CODEC_CONFIGS[codec]["pixel_format"]
+
+        codec_config = cast(Dict[str, Any], self.CODEC_CONFIGS[codec])
+        base_format = codec_config.get("pixel_format")
         if base_format is None:  # rawvideo case
             return None
-            
+
         # Adjust pixel format based on feature type
-        if len(feature_type.shape) == 3 and feature_type.shape[2] == 3:
+        shape = feature_type.shape
+        if shape is not None and len(shape) == 3 and shape[2] == 3:
             # RGB image
-            return "yuv420p" if codec in ["libx264", "libx265", "libaom-av1", "ffv1"] else "rgb24"
-        elif len(feature_type.shape) == 2 or (len(feature_type.shape) == 3 and feature_type.shape[2] == 1):
+            return ("yuv420p" if codec in [
+                "libx264", "libx265", "libaom-av1", "ffv1"
+            ] else "rgb24")
+        elif shape is not None and (len(shape) == 2 or
+                                    (len(shape) == 3 and shape[2] == 1)):
             # Grayscale image
             return "gray"
         else:
             return base_format
-    
+
     def get_codec_options(self, codec: str) -> Dict[str, Any]:
         """Get codec options, merging defaults with custom options."""
         if codec not in self.CODEC_CONFIGS:
             return self.custom_options
-            
-        options = self.CODEC_CONFIGS[codec]["options"].copy()
+
+        codec_config = cast(Dict[str, Any], self.CODEC_CONFIGS[codec])
+        options = codec_config.get("options", {}).copy()
         options.update(self.custom_options)
         return options
 
 
-class Trajectory:
+class Trajectory(TrajectoryInterface):
+
     def __init__(
         self,
         path: Text,
@@ -162,7 +179,7 @@ class Trajectory:
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
-        
+
         # Handle backward compatibility for a hypothetical old_lossy_param
         # We are now removing the actual lossy_compression param
         # old_lossy_param = kwargs.pop('lossy_compression', None) # Example if it were in kwargs
@@ -172,22 +189,27 @@ class Trajectory:
         #         video_codec = "libaom-av1"
         #     else:
         #         video_codec = "ffv1"
-        
+
         # Initialize codec configuration
         self.codec_config = CodecConfig(video_codec, codec_options)
-        
+
         # Dependency injection - set early so they're available during init
         self._filesystem = filesystem
         self._time_provider = time_provider
-        
-        self.feature_name_to_stream = {}  # feature_name: stream
-        self.feature_name_to_feature_type = {}  # feature_name: feature_type
+
+        self.feature_name_to_stream: Dict[str,
+                                          Any] = {}  # feature_name: stream
+        self.feature_name_to_feature_type: Dict[str, FeatureType] = {
+        }  # feature_name: feature_type
         self.trajectory_data = None  # trajectory_data
         self.start_time = self._time()
         self.mode = mode
-        self.stream_id_to_info = {}  # stream_id: StreamInfo
+        self.stream_id_to_info: Dict[int,
+                                     StreamInfo] = {}  # stream_id: StreamInfo
         self.is_closed = False
-        self.pending_write_tasks = []  # List to keep track of pending write tasks
+        self.pending_write_tasks: List[Any] = [
+        ]  # List to keep track of pending write tasks
+        self.container_file: Optional[Any] = None  # av.OutputContainer or None
 
         # check if the path exists
         # if not, create a new file and start data collection
@@ -195,7 +217,9 @@ class Trajectory:
             if not self._exists(self.path):
                 self._makedirs(os.path.dirname(self.path), exist_ok=True)
             try:
-                self.container_file = av.open(self.path, mode="w", format="matroska")
+                self.container_file = av.open(self.path,
+                                              mode="w",
+                                              format="matroska")
             except Exception as e:
                 logger.error(f"error creating the trajectory file: {e}")
                 raise
@@ -210,25 +234,25 @@ class Trajectory:
         if self._filesystem:
             return self._filesystem.exists(path)
         return os.path.exists(path)
-    
+
     def _makedirs(self, path: str, exist_ok: bool = False) -> None:
         """Directory creation with dependency injection support."""
         if self._filesystem:
             return self._filesystem.makedirs(path, exist_ok=exist_ok)
         return os.makedirs(path, exist_ok=exist_ok)
-    
+
     def _remove(self, path: str) -> None:
         """File removal with dependency injection support."""
         if self._filesystem:
             return self._filesystem.remove(path)
         return os.remove(path)
-    
+
     def _rename(self, src: str, dst: str) -> None:
         """File rename with dependency injection support."""
         if self._filesystem:
             return self._filesystem.rename(src, dst)
         return os.rename(src, dst)
-    
+
     def _time(self) -> float:
         """Time retrieval with dependency injection support."""
         if self._time_provider:
@@ -252,6 +276,9 @@ class Trajectory:
             logger.info(f"Loading the trajectory data with key {key}")
             self.trajectory_data = self.load()
 
+        if self.trajectory_data is None:
+            raise RuntimeError("Failed to load trajectory data")
+
         return self.trajectory_data[key]
 
     def close(self, compact=True):
@@ -261,8 +288,10 @@ class Trajectory:
         args:
         compact: re-read from the cache to encode pickled data to images
         """
-        logger.debug(f"Closing trajectory, is_closed={self.is_closed}, compact={compact}")
-        
+        logger.debug(
+            f"Closing trajectory, is_closed={self.is_closed}, compact={compact}"
+        )
+
         if self.is_closed:
             raise ValueError("The container file is already closed")
 
@@ -274,28 +303,35 @@ class Trajectory:
             return
 
         # Write mode handling
-        if not hasattr(self, 'container_file') or self.container_file is None:
-            logger.warning("Container file not available, marking trajectory as closed")
+        if not hasattr(self, "container_file") or self.container_file is None:
+            logger.warning(
+                "Container file not available, marking trajectory as closed")
             self.is_closed = True
             return
 
         # Check if there are any streams with data
         has_data = len(self.container_file.streams) > 0
-        
+
         try:
             ts = self._get_current_timestamp()
             logger.debug(f"Final timestamp: {ts}")
-            
+
             for i, stream in enumerate(self.container_file.streams):
                 logger.debug(f"Flushing stream {i}: {stream}")
                 try:
-                    packets = stream.encode(None)
-                    logger.debug(f"Stream {i} flush returned {len(packets)} packets")
+                    packets = stream.encode(None)  # type: ignore[attr-defined]
+                    logger.debug(
+                        f"Stream {i} flush returned {len(packets)} packets")
                     for j, packet in enumerate(packets):
                         packet.pts = ts
                         packet.dts = ts
-                        self.container_file.mux(packet)
-                        logger.debug(f"Muxed flush packet {j} from stream {i}")
+                        if self.container_file is not None:
+                            self.container_file.mux(packet)
+                            logger.debug(
+                                f"Muxed flush packet {j} from stream {i}")
+                        else:
+                            raise RuntimeError(
+                                "Container file is None, cannot mux packet")
                 except Exception as e:
                     logger.error(f"Error flushing stream {stream}: {e}")
             logger.debug("Flushing the container file")
@@ -305,18 +341,23 @@ class Trajectory:
 
         logger.debug("Closing container file")
         self.container_file.close()
-        
+
         # Only attempt transcoding if file exists, has content, and compact is requested
-        if compact and has_data and self._exists(self.path) and os.path.getsize(self.path) > 0:
+        if (compact and has_data and self._exists(self.path)
+                and os.path.getsize(self.path) > 0):
             logger.debug("Starting transcoding of pickled images")
             try:
                 self._transcode_pickled_images(ending_timestamp=ts)
             except Exception as e:
-                logger.warning(f"Transcoding failed: {e}. Keeping original file with pickled data.")
+                logger.warning(
+                    f"Transcoding failed: {e}. Keeping original file with pickled data."
+                )
                 # File remains in original state with pickled data, which is still valid
         else:
-            logger.debug(f"Skipping transcoding: compact={compact}, has_data={has_data}, file_exists={self._exists(self.path)}, file_size={os.path.getsize(self.path) if self._exists(self.path) else 0}")
-        
+            logger.debug(
+                f"Skipping transcoding: compact={compact}, has_data={has_data}, file_exists={self._exists(self.path)}, file_size={os.path.getsize(self.path) if self._exists(self.path) else 0}"
+            )
+
         self.trajectory_data = None
         self.container_file = None
         self.is_closed = True
@@ -332,14 +373,16 @@ class Trajectory:
         Returns:
             dict: A dictionary of numpy arrays or container path based on return_type.
         """
-        
+
         if return_type == "numpy":
             np_cache = self._load_from_container()
             return np_cache
         elif return_type == "container":
             return self.path
         else:
-            raise ValueError(f"Invalid return_type {return_type}. Supported: 'numpy', 'container'")
+            raise ValueError(
+                f"Invalid return_type {return_type}. Supported: 'numpy', 'container'"
+            )
 
     def init_feature_streams(self, feature_spec: Dict):
         """
@@ -349,9 +392,9 @@ class Trajectory:
         """
         for feature, feature_type in feature_spec.items():
             encoding = self._get_encoding_of_feature(None, feature_type)
-            self.feature_name_to_stream[feature] = self._add_stream_to_container(
-                self.container_file, feature, encoding, feature_type
-            )
+            self.feature_name_to_stream[
+                feature] = self._add_stream_to_container(
+                    self.container_file, feature, encoding, feature_type)
 
     def add(
         self,
@@ -383,7 +426,9 @@ class Trajectory:
         Exceptions:
             raise an error if the value is a dictionary
         """
-        logger.debug(f"Adding feature: {feature}, data shape: {getattr(data, 'shape', 'N/A')}")
+        logger.debug(
+            f"Adding feature: {feature}, data shape: {getattr(data, 'shape', 'N/A')}"
+        )
 
         if type(data) == dict:
             raise ValueError("Use add_by_dict for dictionary")
@@ -417,8 +462,11 @@ class Trajectory:
         # write the packet to the container
         for i, packet in enumerate(packets):
             logger.debug(f"Muxing packet {i}: {packet}")
-            self.container_file.mux(packet)
-            logger.debug(f"Successfully muxed packet {i}")
+            if self.container_file is not None:
+                self.container_file.mux(packet)
+                logger.debug(f"Successfully muxed packet {i}")
+            else:
+                raise RuntimeError("Container file is None, cannot mux packet")
 
     def add_by_dict(
         self,
@@ -443,15 +491,24 @@ class Trajectory:
         - if dictionary, need to flatten it and add each feature separately
         """
         if type(data) != dict:
-            raise ValueError("Use add for non-dictionary data, type is ", type(data))
+            raise ValueError("Use add for non-dictionary data, type is ",
+                             type(data))
 
-        _flatten_dict_data = _flatten_dict(data, sep=self.feature_name_separator)
-        timestamp = self._get_current_timestamp() if timestamp is None else timestamp
+        _flatten_dict_data = _flatten_dict(data,
+                                           sep=self.feature_name_separator)
+        timestamp = self._get_current_timestamp(
+        ) if timestamp is None else timestamp
         for feature, value in _flatten_dict_data.items():
             self.add(feature, value, timestamp)
 
     @classmethod
-    def from_list_of_dicts(cls, data: List[Dict[str, Any]], path: Text, video_codec: str = "auto", codec_options: Optional[Dict[str, Any]] = None) -> "Trajectory":
+    def from_list_of_dicts(
+        cls,
+        data: List[Dict[str, Any]],
+        path: Text,
+        video_codec: str = "auto",
+        codec_options: Optional[Dict[str, Any]] = None,
+    ) -> "Trajectory":
         """
         Create a Trajectory object from a list of dictionaries.
 
@@ -469,8 +526,12 @@ class Trajectory:
 
         trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/fog_x/output.vla")
         """
-        traj = cls(path, mode="w", video_codec=video_codec, codec_options=codec_options)
-        logger.info(f"Creating a new trajectory file at {path} with {len(data)} steps")
+        traj = cls(path,
+                   mode="w",
+                   video_codec=video_codec,
+                   codec_options=codec_options)
+        logger.info(
+            f"Creating a new trajectory file at {path} with {len(data)} steps")
         for step in data:
             traj.add_by_dict(step)
         traj.close()
@@ -478,7 +539,12 @@ class Trajectory:
 
     @classmethod
     def from_dict_of_lists(
-        cls, data: Dict[str, List[Any]], path: Text, feature_name_separator: Text = "/", video_codec: str = "auto", codec_options: Optional[Dict[str, Any]] = None
+        cls,
+        data: Dict[str, List[Any]],
+        path: Text,
+        feature_name_separator: Text = "/",
+        video_codec: str = "auto",
+        codec_options: Optional[Dict[str, Any]] = None,
     ) -> "Trajectory":
         """
         Create a Trajectory object from a dictionary of lists.
@@ -501,9 +567,16 @@ class Trajectory:
 
         trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/fog_x/output.vla")
         """
-        traj = cls(path, feature_name_separator=feature_name_separator, mode="w", video_codec=video_codec, codec_options=codec_options)
+        traj = cls(
+            path,
+            feature_name_separator=feature_name_separator,
+            mode="w",
+            video_codec=video_codec,
+            codec_options=codec_options,
+        )
         # flatten the data such that all data starts and put feature name with separator
-        _flatten_dict_data = _flatten_dict(data, sep=traj.feature_name_separator)
+        _flatten_dict_data = _flatten_dict(data,
+                                           sep=traj.feature_name_separator)
 
         # Check if all lists have the same length
         list_lengths = [len(v) for v in _flatten_dict_data.values()]
@@ -522,7 +595,7 @@ class Trajectory:
     def _load_from_container(self):
         """
         Load the container file with the entire VLA trajectory using multi-processing for image streams.
-        
+
         returns:
             np_cache: dictionary with the decoded data
 
@@ -533,12 +606,12 @@ class Trajectory:
         - Decode non-image streams in the main process.
         - Combine results from all processes.
         """
-        
+
         container = av.open(self.path, mode="r", format="matroska")
         streams = container.streams
 
         # Dictionary to store dynamic lists for collecting data
-        np_cache_lists = {}
+        np_cache_lists: Dict[str, List[Any]] = {}
         feature_name_to_stream = {}
 
         # Initialize lists for each feature
@@ -547,20 +620,32 @@ class Trajectory:
             if feature_name is None:
                 logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
                 continue
-            feature_type = FeatureType.from_str(stream.metadata.get("FEATURE_TYPE"))
+            feature_type_str = stream.metadata.get("FEATURE_TYPE")
+            if feature_type_str is None:
+                logger.debug(f"Skipping stream without FEATURE_TYPE: {stream}")
+                continue
+            feature_type = FeatureType.from_str(feature_type_str)
             feature_name_to_stream[feature_name] = stream
             self.feature_name_to_feature_type[feature_name] = feature_type
 
-            logger.debug(f"Initializing list for {feature_name} with feature_type {feature_type}")
+            logger.debug(
+                f"Initializing list for {feature_name} with feature_type {feature_type}"
+            )
             np_cache_lists[feature_name] = []
 
         # Decode the frames and store them in the lists
         for packet in container.demux(list(streams)):
             feature_name = packet.stream.metadata.get("FEATURE_NAME")
             if feature_name is None:
-                logger.debug(f"Skipping stream without FEATURE_NAME: {packet.stream}")
+                logger.debug(
+                    f"Skipping stream without FEATURE_NAME: {packet.stream}")
                 continue
-            feature_type = FeatureType.from_str(packet.stream.metadata.get("FEATURE_TYPE"))
+            feature_type_str = packet.stream.metadata.get("FEATURE_TYPE")
+            if feature_type_str is None:
+                logger.debug(
+                    f"Skipping stream without FEATURE_TYPE: {packet.stream}")
+                continue
+            feature_type = FeatureType.from_str(feature_type_str)
 
             logger.debug(f"Decoding {feature_name} with time {packet.dts}")
 
@@ -572,14 +657,27 @@ class Trajectory:
                     data = pickle.loads(packet_in_bytes)
                     np_cache_lists[feature_name].append(data)
                 else:
-                    logger.debug(f"Skipping empty packet: {packet} for {feature_name}")
+                    logger.debug(
+                        f"Skipping empty packet: {packet} for {feature_name}")
             else:
                 frames = packet.decode()
                 for frame in frames:
                     if feature_type.dtype == "float32":
-                        data = frame.to_ndarray(format="gray").reshape(feature_type.shape)
+                        shape = feature_type.shape
+                        if shape is not None:
+                            data = frame.to_ndarray(  # type: ignore[attr-defined]
+                                format="gray").reshape(shape)
+                        else:
+                            data = frame.to_ndarray(
+                                format="gray")  # type: ignore[attr-defined]
                     else:
-                        data = frame.to_ndarray(format="rgb24").reshape(feature_type.shape)
+                        shape = feature_type.shape
+                        if shape is not None:
+                            data = frame.to_ndarray(  # type: ignore[attr-defined]
+                                format="rgb24").reshape(shape)
+                        else:
+                            data = frame.to_ndarray(
+                                format="rgb24")  # type: ignore[attr-defined]
                     np_cache_lists[feature_name].append(data)
 
         container.close()
@@ -587,22 +685,26 @@ class Trajectory:
         # Convert lists to numpy arrays
         np_cache = {}
         for feature_name, data_list in np_cache_lists.items():
-            logger.debug(f"Converting {feature_name} list of length {len(data_list)} to numpy array")
+            logger.debug(
+                f"Converting {feature_name} list of length {len(data_list)} to numpy array"
+            )
             if not data_list:
                 logger.debug(f"Warning: {feature_name} has no data!")
                 continue
-                
+
             feature_type = self.feature_name_to_feature_type[feature_name]
-            
+
             if feature_type.dtype == "string":
                 np_cache[feature_name] = np.array(data_list, dtype=object)
             else:
                 # Convert list to numpy array
-                np_cache[feature_name] = np.array(data_list, dtype=feature_type.dtype)
+                np_cache[feature_name] = np.array(data_list,
+                                                  dtype=feature_type.dtype)
 
         return np_cache
 
-    def _transcode_pickled_images(self, ending_timestamp: Optional[int] = None):
+    def _transcode_pickled_images(self,
+                                  ending_timestamp: Optional[int] = None):
         """
         Transcode pickled images into the desired format (e.g., raw or encoded images).
         """
@@ -613,7 +715,9 @@ class Trajectory:
 
         try:
             # Open the original container for reading
-            original_container = av.open(temp_path, mode="r", format="matroska")
+            original_container = av.open(temp_path,
+                                         mode="r",
+                                         format="matroska")
             original_streams = list(original_container.streams)
 
             # Create a new container
@@ -624,32 +728,41 @@ class Trajectory:
             for stream in original_streams:
                 stream_feature = stream.metadata.get("FEATURE_NAME")
                 if stream_feature is None:
-                    logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
+                    logger.debug(
+                        f"Skipping stream without FEATURE_NAME: {stream}")
                     continue
-                
+
                 # Determine encoding method based on feature type
                 try:
                     stream_encoding = self._get_encoding_of_feature(
-                        None, self.feature_name_to_feature_type[stream_feature]
-                    )
-                    stream_feature_type = self.feature_name_to_feature_type[stream_feature]
+                        None,
+                        self.feature_name_to_feature_type[stream_feature])
+                    stream_feature_type = self.feature_name_to_feature_type[
+                        stream_feature]
                     stream_in_updated_container = self._add_stream_to_container(
-                        new_container, stream_feature, stream_encoding, stream_feature_type
+                        new_container,
+                        stream_feature,
+                        stream_encoding,
+                        stream_feature_type,
                     )
                 except Exception as e:
-                    logger.warning(f"Failed to create stream for {stream_feature} with desired encoding, falling back to rawvideo: {e}")
+                    logger.warning(
+                        f"Failed to create stream for {stream_feature} with desired encoding, falling back to rawvideo: {e}"
+                    )
                     # Fallback to rawvideo if the desired codec is not available
                     stream_in_updated_container = self._add_stream_to_container(
-                        new_container, stream_feature, "rawvideo", self.feature_name_to_feature_type[stream_feature]
+                        new_container,
+                        stream_feature,
+                        "rawvideo",
+                        self.feature_name_to_feature_type[stream_feature],
                     )
 
                 # Preserve the stream metadata
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
 
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container
-                )
+                d_original_stream_id_to_new_container_stream[
+                    stream.index] = stream_in_updated_container
 
             # Transcode pickled images and add them to the new container
             packets_muxed = 0
@@ -660,23 +773,31 @@ class Trajectory:
 
                 if is_packet_valid(packet):
                     original_stream = packet.stream
-                    new_stream = d_original_stream_id_to_new_container_stream[packet.stream.index]
+                    new_stream = d_original_stream_id_to_new_container_stream[
+                        packet.stream.index]
                     packet.stream = new_stream
 
                     # Check if the ORIGINAL stream is using rawvideo, meaning it's a pickled stream
                     if original_stream.codec_context.codec.name == "rawvideo":
-                        logger.debug(f"Transcoding rawvideo packet from {original_stream.metadata.get('FEATURE_NAME')}")
+                        logger.debug(
+                            f"Transcoding rawvideo packet from {original_stream.metadata.get('FEATURE_NAME')}"
+                        )
                         data = pickle.loads(bytes(packet))
 
                         # Encode the image data with the new stream's encoding
                         try:
-                            new_packets = self._encode_frame(data, new_stream, packet.pts)
+                            pts_timestamp = packet.pts if packet.pts is not None else 0
+                            new_packets = self._encode_frame(
+                                data, new_stream, pts_timestamp)
                             for new_packet in new_packets:
-                                logger.debug(f"Muxing transcoded packet: {new_packet}")
+                                logger.debug(
+                                    f"Muxing transcoded packet: {new_packet}")
                                 new_container.mux(new_packet)
                                 packets_muxed += 1
                         except Exception as e:
-                            logger.warning(f"Failed to encode {original_stream.metadata.get('FEATURE_NAME')} with {new_stream.codec_context.codec.name}, keeping as pickled data: {e}")
+                            logger.warning(
+                                f"Failed to encode {original_stream.metadata.get('FEATURE_NAME')} with {new_stream.codec_context.codec.name}, keeping as pickled data: {e}"
+                            )
                             # If encoding fails, keep the original pickled packet
                             new_container.mux(packet)
                             packets_muxed += 1
@@ -694,8 +815,10 @@ class Trajectory:
             for stream in new_container.streams:
                 logger.debug(f"Flushing stream during transcode: {stream}")
                 try:
-                    flush_packets = stream.encode(None)
-                    logger.debug(f"Stream flush returned {len(flush_packets)} packets")
+                    flush_packets = stream.encode(
+                        None)  # type: ignore[attr-defined]
+                    logger.debug(
+                        f"Stream flush returned {len(flush_packets)} packets")
                     for packet in flush_packets:
                         packet.pts = ending_timestamp
                         packet.dts = ending_timestamp
@@ -706,7 +829,7 @@ class Trajectory:
                     logger.error(f"Error flushing stream {stream}: {e}")
 
             logger.debug(f"Total packets muxed: {packets_muxed}")
-            
+
             original_container.close()
             new_container.close()
             self._remove(temp_path)
@@ -721,7 +844,8 @@ class Trajectory:
                 logger.info(f"Restored original file to {self.path}")
             raise
 
-    def _encode_frame(self, data: Any, stream: Any, timestamp: int) -> List[av.Packet]:
+    def _encode_frame(self, data: Any, stream: Any,
+                      timestamp: int) -> List[av.Packet]:
         """
         encode the frame and write it to the stream file, return the packet
         args:
@@ -733,10 +857,14 @@ class Trajectory:
         """
         encoding = stream.codec_context.codec.name
         feature_type = FeatureType.from_data(data)
-        logger.debug(f"Encoding {stream.metadata.get('FEATURE_NAME')} with {encoding}, feature_type: {feature_type}")
-        
+        logger.debug(
+            f"Encoding {stream.metadata.get('FEATURE_NAME')} with {encoding}, feature_type: {feature_type}"
+        )
+
         # For video codecs, only attempt to create video frames if data is image-like (2D or 3D)
-        if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"] and len(feature_type.shape) >= 2:
+        shape = feature_type.shape
+        if (encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]
+                and shape is not None and len(shape) >= 2):
             logger.debug("Using video encoding path for image-like data")
             if feature_type.dtype == "float32":
                 frame = self._create_frame_depth(data, stream)
@@ -746,14 +874,16 @@ class Trajectory:
             frame.dts = timestamp
             frame.time_base = stream.time_base
             logger.debug(f"Created frame: pts={frame.pts}, dts={frame.dts}")
-            packets = stream.encode(frame)
+            packets = stream.encode(frame)  # type: ignore[attr-defined]
             logger.debug(f"Stream encode returned {len(packets)} packets")
         else:
             if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
-                 logger.debug(f"Data is not image-like (shape: {feature_type.shape}). Using rawvideo (pickling) path for this packet despite stream encoding being {encoding}.")
+                logger.debug(
+                    f"Data is not image-like (shape: {shape}). Using rawvideo (pickling) path for this packet despite stream encoding being {encoding}."
+                )
             else:
                 logger.debug("Using rawvideo encoding path")
-            
+
             packet = av.Packet(pickle.dumps(data))
             packet.dts = timestamp
             packet.pts = timestamp
@@ -763,11 +893,13 @@ class Trajectory:
 
             packets = [packet]
 
-        for packet_item in packets: # renamed to avoid conflict with outer scope 'packet'
+        for (
+                packet_item
+        ) in packets:  # renamed to avoid conflict with outer scope 'packet'
             packet_item.pts = timestamp
             packet_item.dts = timestamp
             packet_item.time_base = stream.time_base
-        
+
         logger.debug(f"Returning {len(packets)} packets")
         return packets
 
@@ -776,10 +908,12 @@ class Trajectory:
             return
 
         if not self.feature_name_to_stream:
-            logger.debug(f"Creating a new stream for the first feature {new_feature}")
-            self.feature_name_to_stream[new_feature] = self._add_stream_to_container(
-                self.container_file, new_feature, new_encoding, new_feature_type
-            )
+            logger.debug(
+                f"Creating a new stream for the first feature {new_feature}")
+            self.feature_name_to_stream[
+                new_feature] = self._add_stream_to_container(
+                    self.container_file, new_feature, new_encoding,
+                    new_feature_type)
         else:
             logger.debug(f"Adding a new stream for the feature {new_feature}")
             # Following is a workaround because we cannot add new streams to an existing container
@@ -791,7 +925,9 @@ class Trajectory:
             self._rename(self.path, temp_path)
 
             # Open the original container for reading
-            original_container = av.open(temp_path, mode="r", format="matroska")
+            original_container = av.open(temp_path,
+                                         mode="r",
+                                         format="matroska")
             original_streams = list(original_container.streams)
 
             # Create a new container
@@ -802,28 +938,30 @@ class Trajectory:
             for stream in original_streams:
                 stream_feature = stream.metadata.get("FEATURE_NAME")
                 if stream_feature is None:
-                    logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
+                    logger.debug(
+                        f"Skipping stream without FEATURE_NAME: {stream}")
                     continue
                 stream_encoding = stream.codec_context.codec.name
-                stream_feature_type = self.feature_name_to_feature_type[stream_feature]
+                stream_feature_type = self.feature_name_to_feature_type[
+                    stream_feature]
                 stream_in_updated_container = self._add_stream_to_container(
-                    new_container, stream_feature, stream_encoding, stream_feature_type
-                )
+                    new_container, stream_feature, stream_encoding,
+                    stream_feature_type)
                 # new_stream.options = stream.options
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container
-                )
+                d_original_stream_id_to_new_container_stream[
+                    stream.index] = stream_in_updated_container
 
             # Add new feature stream
-            new_stream = self._add_stream_to_container(
-                new_container, new_feature, new_encoding, new_feature_type
-            )
-            d_original_stream_id_to_new_container_stream[new_stream.index] = new_stream
+            new_stream = self._add_stream_to_container(new_container,
+                                                       new_feature,
+                                                       new_encoding,
+                                                       new_feature_type)
+            d_original_stream_id_to_new_container_stream[
+                new_stream.index] = new_stream
             self.stream_id_to_info[new_stream.index] = StreamInfo(
-                new_feature, new_feature_type, new_encoding
-            )
+                new_feature, new_feature_type, new_encoding)
 
             # Remux existing packets
             for packet in original_container.demux(original_streams):
@@ -833,8 +971,7 @@ class Trajectory:
 
                 if is_packet_valid(packet):
                     packet.stream = d_original_stream_id_to_new_container_stream[
-                        packet.stream.index
-                    ]
+                        packet.stream.index]
                     new_container.mux(packet)
                 else:
                     pass
@@ -847,21 +984,24 @@ class Trajectory:
             self.feature_name_to_stream[new_feature] = new_stream
             self.is_closed = False
 
-    def _add_stream_to_container(self, container, feature_name, encoding, feature_type):
+    def _add_stream_to_container(self, container, feature_name, encoding,
+                                 feature_type):
         stream = container.add_stream(encoding)
-        
+
         # Configure stream based on encoding type
         if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
             # Only set width/height if shape is 2D or more (image/video like)
-            if len(feature_type.shape) >= 2:
-                stream.width = feature_type.shape[1]
-                stream.height = feature_type.shape[0]
-            
+            shape = feature_type.shape
+            if shape is not None and len(shape) >= 2:
+                stream.width = shape[1]
+                stream.height = shape[0]
+
             # Set pixel format based on codec and feature type
-            pixel_format = self.codec_config.get_pixel_format(encoding, feature_type)
+            pixel_format = self.codec_config.get_pixel_format(
+                encoding, feature_type)
             if pixel_format:
                 stream.pix_fmt = pixel_format
-            
+
             # Set codec-specific options
             codec_options = self.codec_config.get_codec_options(encoding)
             if codec_options:
@@ -875,7 +1015,7 @@ class Trajectory:
     def _create_frame(self, image_array, stream):
         image_array = np.array(image_array, dtype=np.uint8)
         encoding = stream.codec_context.codec.name
-        
+
         # Determine the correct format based on array shape and codec
         if len(image_array.shape) == 3 and image_array.shape[2] == 3:
             # RGB image
@@ -887,23 +1027,25 @@ class Trajectory:
                 frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
         elif len(image_array.shape) == 3 and image_array.shape[2] == 1:
             # Single channel image, squeeze the last dimension
-            frame = av.VideoFrame.from_ndarray(image_array.squeeze(axis=2), format="gray")
+            frame = av.VideoFrame.from_ndarray(image_array.squeeze(axis=2),
+                                               format="gray")
         elif len(image_array.shape) == 2:
             # Grayscale image
             frame = av.VideoFrame.from_ndarray(image_array, format="gray")
         else:
-            raise ValueError(f"Unsupported image array shape: {image_array.shape}")
-        
+            raise ValueError(
+                f"Unsupported image array shape: {image_array.shape}")
+
         frame.time_base = stream.time_base
         return frame
 
     def _create_frame_depth(self, image_array, stream):
         image_array = np.array(image_array)
-        
+
         # Convert float32 to uint8 if needed
         if image_array.dtype == np.float32:
             image_array = (image_array * 255).astype(np.uint8)
-        
+
         # Handle different shapes
         if len(image_array.shape) == 3:
             # If 3D, take the first channel or average if it's RGB
@@ -913,14 +1055,13 @@ class Trajectory:
             else:
                 # Take the first channel
                 image_array = image_array[:, :, 0]
-        
+
         frame = av.VideoFrame.from_ndarray(image_array, format="gray")
         frame.time_base = stream.time_base
         return frame
 
-    def _get_encoding_of_feature(
-        self, feature_value: Any, feature_type: Optional[FeatureType]
-    ) -> Text:
+    def _get_encoding_of_feature(self, feature_value: Any,
+                                 feature_type: Optional[FeatureType]) -> Text:
         """
         get the encoding of the feature value
         args:
@@ -931,7 +1072,7 @@ class Trajectory:
         """
         if feature_type is None:
             feature_type = FeatureType.from_data(feature_value)
-        
+
         return self.codec_config.get_codec_for_feature(feature_type)
 
     def save_stream_info(self):

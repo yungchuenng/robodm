@@ -1,17 +1,19 @@
-import os
-import subprocess
 import argparse
-import time
-import numpy as np
-from fog_x.loader import RLDSLoader, VLALoader, HDF5Loader
-import tensorflow as tf
-import pandas as pd
-import fog_x
 import csv
+import os
 import stat
+import subprocess
+import time
+
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+import fog_x
+from fog_x.loader import HDF5Loader, RLDSLoader, VLALoader
+from fog_x.loader.hdf5 import get_hdf5_dataloader
 from fog_x.loader.lerobot import LeRobotLoader
 from fog_x.loader.vla import get_vla_dataloader
-from fog_x.loader.hdf5 import get_hdf5_dataloader
 
 # Constants
 DEFAULT_EXP_DIR = "/mnt/data/fog_x/"
@@ -24,7 +26,7 @@ DEFAULT_DATASET_NAMES = [
 ]
 # DEFAULT_DATASET_NAMES = ["bridge"]
 # CACHE_DIR = "/tmp/fog_x/cache/"
-CACHE_DIR  = "/mnt/data/fog_x/cache/"
+CACHE_DIR = "/mnt/data/fog_x/cache/"
 DEFAULT_LOG_FREQUENCY = 20
 
 # suppress tensorflow warnings
@@ -33,7 +35,9 @@ import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 import logging
+
 logger = logging.getLogger(__name__)
+
 
 class DatasetHandler:
     def __init__(
@@ -64,9 +68,9 @@ class DatasetHandler:
             for f in filenames:
                 file_path = os.path.join(dirpath, f)
                 total_size += os.path.getsize(file_path)
-        
+
         logger.debug(f"total_size: {total_size} of directory {self.dataset_dir}")
-        # trajectory number 
+        # trajectory number
         traj_num = 0
         if self.dataset_name == "nyu_door_opening_surprising_effectiveness":
             traj_num = 435
@@ -87,13 +91,16 @@ class DatasetHandler:
     def clear_os_cache(self):
         """Clears the OS cache."""
         subprocess.run(["sync"], check=True)
-        subprocess.run(["sudo", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True)
+        subprocess.run(
+            ["sudo", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True
+        )
         logger.info(f"Cleared OS cache")
-        
+
     def _recursively_load_data(self, data):
         logger.debug(f"Data summary for loader {self.dataset_type.upper()}")
         if None in data:
             logger.warning(f"None value found in data")
+
         def summarize_trajectory(trajectory):
             def summarize_value(value):
                 if isinstance(value, np.ndarray):
@@ -114,7 +121,7 @@ class DatasetHandler:
 
         trajectory_summaries = [summarize_trajectory(trajectory) for trajectory in data]
 
-        log_func = logger.debug if self.log_level == 'debug' else logger.info
+        log_func = logger.debug if self.log_level == "debug" else logger.info
         for i, summary in enumerate(trajectory_summaries):
             log_func(f"Trajectory {i + 1}:")
             for feature, dimension in summary.items():
@@ -159,9 +166,7 @@ class DatasetHandler:
             elapsed_time = current_batch_time - last_batch_time
             last_batch_time = current_batch_time
 
-            self.write_result(
-                f"{self.dataset_type.upper()}", elapsed_time, batch_num
-            )
+            self.write_result(f"{self.dataset_type.upper()}", elapsed_time, batch_num)
             if batch_num % self.log_frequency == 0:
                 logger.info(
                     f"{self.dataset_type.upper()} - Loaded {batch_num} random {self.batch_size} batches from {self.dataset_name}, Time: {elapsed_time:.2f} s, Total Average Time: {(current_batch_time - start_time) / (batch_num + 1):.2f} s, Batch Average Time: {elapsed_time / self.batch_size:.2f} s"
@@ -198,7 +203,7 @@ class RLDSHandler(DatasetHandler):
     def _recursively_load_data(self, data):
         log_level = self.log_level
         # rlds returns a list of dictionaries
-        log_func = logger.debug if log_level == 'debug' else logger.info
+        log_func = logger.debug if log_level == "debug" else logger.info
         log_func(f"Data summary for loader {self.dataset_type.upper()}")
         for i, trajectory in enumerate(data):
             log_func(f"Trajectory {i + 1}:")
@@ -215,6 +220,7 @@ class RLDSHandler(DatasetHandler):
                     else:
                         log_func(f"    {key}: {type(value).__name__}")
         log_func(f"Total number of trajectories: {len(data)}")
+
 
 class VLAHandler(DatasetHandler):
     def __init__(
@@ -295,9 +301,10 @@ class LeRobotHandler(DatasetHandler):
 
     def _recursively_load_data(self, data):
         import torch
+
         log_level = self.log_level
         # LeRobot returns a list of lists
-        log_func = logger.debug if log_level == 'debug' else logger.info
+        log_func = logger.debug if log_level == "debug" else logger.info
         log_func(f"Data summary for loader {self.dataset_type.upper()}")
         for i, trajectory in enumerate(data):
             log_func(f"Trajectory {i + 1}:")
@@ -317,9 +324,24 @@ class LeRobotHandler(DatasetHandler):
                         log_func(f"    {key}: {type(value).__name__}")
         log_func(f"Total number of trajectories: {len(data)}")
 
+
 class FFV1Handler(DatasetHandler):
-    def __init__(self, exp_dir, dataset_name, num_batches, batch_size, log_frequency=DEFAULT_LOG_FREQUENCY):
-        super().__init__(exp_dir, dataset_name, num_batches, dataset_type="ffv1", batch_size=batch_size, log_frequency=log_frequency)
+    def __init__(
+        self,
+        exp_dir,
+        dataset_name,
+        num_batches,
+        batch_size,
+        log_frequency=DEFAULT_LOG_FREQUENCY,
+    ):
+        super().__init__(
+            exp_dir,
+            dataset_name,
+            num_batches,
+            dataset_type="ffv1",
+            batch_size=batch_size,
+            log_frequency=log_frequency,
+        )
         self.file_extension = ".vla"
 
     def get_loader(self):
@@ -338,7 +360,7 @@ def evaluation(args):
     new_results = []
     for dataset_name in args.dataset_names:
         logger.debug(f"Evaluating dataset: {dataset_name}")
-        
+
         handlers = [
             # VLAHandler(
             #     args.exp_dir,

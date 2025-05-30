@@ -1,20 +1,23 @@
 """Factory for creating trajectory instances with dependency injection."""
 
 from typing import Any, Dict, Optional, Text
-from .trajectory_base import TrajectoryInterface, FileSystemInterface, TimeProvider, DefaultFileSystem, DefaultTimeProvider
+
+from .trajectory_base import (DefaultFileSystem, DefaultTimeProvider,
+                              FileSystemInterface, TimeProvider,
+                              TrajectoryInterface)
 
 
 class TrajectoryFactory:
     """Factory for creating trajectory instances with configurable dependencies."""
-    
+
     def __init__(
         self,
         filesystem: Optional[FileSystemInterface] = None,
-        time_provider: Optional[TimeProvider] = None
+        time_provider: Optional[TimeProvider] = None,
     ):
         self.filesystem = filesystem or DefaultFileSystem()
         self.time_provider = time_provider or DefaultTimeProvider()
-    
+
     def create_trajectory(
         self,
         path: Text,
@@ -25,7 +28,7 @@ class TrajectoryFactory:
     ) -> TrajectoryInterface:
         """
         Create a trajectory instance with injected dependencies.
-        
+
         Args:
             path (Text): Path to trajectory file
             mode (str): File mode ("r" or "w")
@@ -34,7 +37,7 @@ class TrajectoryFactory:
             feature_name_separator (Text): Delimiter for feature names
         """
         from .trajectory import Trajectory
-        
+
         # Create trajectory with dependency injection
         trajectory = Trajectory(
             path=path,
@@ -45,7 +48,7 @@ class TrajectoryFactory:
             filesystem=self.filesystem,
             time_provider=self.time_provider,
         )
-        
+
         return trajectory
 
 
@@ -62,7 +65,7 @@ def create_trajectory(
 ) -> TrajectoryInterface:
     """
     Convenience function to create trajectory with default dependencies.
-    
+
     Args:
         path (Text): Path to trajectory file
         mode (str): File mode ("r" or "w")
@@ -76,4 +79,4 @@ def create_trajectory(
         video_codec=video_codec,
         codec_options=codec_options,
         feature_name_separator=feature_name_separator,
-    ) 
+    )
