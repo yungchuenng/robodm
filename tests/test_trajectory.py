@@ -180,7 +180,7 @@ class TestTrajectory:
         assert "reward" in loaded_data
         
         # Verify data shapes
-        assert loaded_data["observation/image"].shape == (2, 640,480, 3)
+        assert loaded_data["observation/image"].shape == (2, 480, 640, 3)
         assert loaded_data["observation/joint_positions"].shape == (2, 7)
         assert loaded_data["action"].shape == (2, 7)
         assert loaded_data["reward"].shape == (2,)
@@ -201,7 +201,7 @@ class TestTrajectory:
         
         # Test __getitem__ access
         image_data = traj["observation/image"]
-        assert image_data.shape == (2, 640,480, 3)
+        assert image_data.shape == (2, 480, 640, 3)
         
         action_data = traj["action"]
         assert action_data.shape == (2, 7)

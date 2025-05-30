@@ -102,7 +102,7 @@ class BenchmarkRunner:
         
         # Benchmark loading
         start_time = time.time()
-        loaded_traj = Trajectory(path, mode="r", cache_dir=self.temp_dir)
+        loaded_traj = Trajectory(path, mode="r")
         loaded_data = loaded_traj.load()
         loading_time = time.time() - start_time
         

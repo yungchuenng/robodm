@@ -92,7 +92,7 @@ def sample_trajectory_data():
     return [
         {
             "observation": {
-                "image": np.random.randint(0, 255, (640,480, 3), dtype=np.uint8),
+                "image": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
                 "joint_positions": np.random.random(7).astype(np.float32),
             },
             "action": np.random.random(7).astype(np.float32),
@@ -100,7 +100,7 @@ def sample_trajectory_data():
         },
         {
             "observation": {
-                "image": np.random.randint(0, 255, (640,480, 3), dtype=np.uint8),
+                "image": np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
                 "joint_positions": np.random.random(7).astype(np.float32),
             },
             "action": np.random.random(7).astype(np.float32),
@@ -115,8 +115,8 @@ def sample_dict_of_lists():
     return {
         "observation": {
             "image": [
-                np.random.randint(0, 255, (640,480, 3), dtype=np.uint8),
-                np.random.randint(0, 255, (640,480, 3), dtype=np.uint8),
+                np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
+                np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8),
             ],
             "joint_positions": [
                 np.random.random(7).astype(np.float32),
@@ -136,7 +136,7 @@ def large_sample_data():
     """Large sample data for benchmarking."""
     num_samples = 100
     return {
-        "observation/image": [np.random.randint(0, 255, (640,480, 3), dtype=np.uint8) for _ in range(num_samples)],
+        "observation/image": [np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8) for _ in range(num_samples)],
         "observation/joint_positions": [np.random.random(7).astype(np.float32) for _ in range(num_samples)],
         "action": [np.random.random(7).astype(np.float32) for _ in range(num_samples)],
         "reward": [np.float32(np.random.random()) for _ in range(num_samples)],

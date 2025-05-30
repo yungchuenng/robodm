@@ -8,11 +8,11 @@ import shutil
 from unittest.mock import Mock, patch
 
 from fog_x import Trajectory
-from fog_x.loader import VLALoader, HDF5Loader
+from fog_x.loader import NonShuffleVLALoader, HDF5Loader
 from .test_fixtures import BenchmarkDataset
 
 
-class TestVLALoader:
+class TestNonShuffleVLALoader:
     """Test the VLA loader."""
     
     def test_vla_loader_basic(self, temp_dir, large_sample_data):
@@ -28,7 +28,7 @@ class TestVLALoader:
         
         # Test loading
         pattern = os.path.join(temp_dir, "*.vla")
-        loader = VLALoader(pattern, cache_dir=temp_dir)
+        loader = NonShuffleVLALoader(pattern)
         
         # Test iteration
         trajectories = list(loader)
@@ -50,9 +50,8 @@ class TestVLALoader:
         # Test with batch size
         from fog_x.loader.vla import get_vla_dataloader
         dataloader = get_vla_dataloader(
-            data_dir=temp_dir,
-            batch_size=2,
-            cache_dir=temp_dir
+            path=temp_dir,
+            batch_size=2
         )
         
         batches = list(dataloader)
@@ -149,7 +148,7 @@ class TestLoaderComparison:
         benchmark_dataset.create_hdf5_dataset(h5_path, deterministic_data)
         
         # Load via both loaders
-        vla_loader = VLALoader(vla_path, cache_dir=temp_dir)
+        vla_loader = NonShuffleVLALoader(vla_path)
         vla_data = list(vla_loader)[0]
         
         from fog_x.loader.hdf5 import get_hdf5_dataloader
@@ -182,7 +181,7 @@ class TestLoaderError:
     def test_vla_loader_empty_pattern(self, temp_dir):
         """Test VLA loader with pattern that matches no files."""
         pattern = os.path.join(temp_dir, "nonexistent_*.vla")
-        loader = VLALoader(pattern, cache_dir=temp_dir)
+        loader = NonShuffleVLALoader(pattern)
         
         # Should handle empty results gracefully
         trajectories = list(loader)
@@ -206,7 +205,7 @@ class TestLoaderError:
         with open(fake_path, "w") as f:
             f.write("This is not a valid VLA file")
         
-        loader = VLALoader(fake_path, cache_dir=temp_dir)
+        loader = NonShuffleVLALoader(fake_path)
         
         # Should handle corrupted files gracefully
         with pytest.raises(Exception):
@@ -223,7 +222,7 @@ class TestLoaderPerformance:
         Trajectory.from_dict_of_lists(large_sample_data, path, lossy_compression=False)
         
         # Load and measure (basic test - would need memory profiling for real measurement)
-        loader = VLALoader(path, cache_dir=temp_dir)
+        loader = NonShuffleVLALoader(path)
         trajectories = list(loader)
         
         assert len(trajectories) == 1
