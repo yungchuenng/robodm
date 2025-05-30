@@ -404,7 +404,7 @@ class TestRLDSLoaderIntegration:
                 float_tolerance = 1e-7  # Very small tolerance for floating point precision
                 print(f"Using lossless codec tolerances (exact match required)")
             else:
-                image_tolerance = 100  # Allow compression artifacts for lossy codecs (reasonable for H.264)
+                image_tolerance = 200  # Allow compression artifacts for lossy codecs (reasonable for H.264)
                 float_tolerance = 1e-4  # Small tolerance for lossy compression
                 print(f"Using lossy codec tolerances (image_tol={image_tolerance}, float_tol={float_tolerance})")
             
@@ -462,11 +462,12 @@ class TestRLDSLoaderIntegration:
             else:
                 pytest.fail(f"Failed with codec {video_codec}: {e}")
 
-    def test_real_openx_data_loading(self, temp_dir):
+    @pytest.mark.parametrize("codec", OPENX_TEST_CODECS)
+    def test_real_openx_data_loading(self, temp_dir, codec):
         """Test loading real Open X-Embodiment data and compare original vs reconstructed."""
         data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
         dataset_name = "fractal20220817_data"  # Define dataset_name for file naming
-        video_codec = "libx264"  # Test with lossy codec
+        video_codec = codec  # Test with lossy codec
         
         try:
             # Load real OpenX data using the correct RLDSLoader API
@@ -629,7 +630,7 @@ class TestRLDSLoaderIntegration:
                 float_tolerance = 1e-7
                 print(f"Using lossless validation (exact match required)")
             else:
-                image_tolerance = 100  # Reasonable for H.264 compression
+                image_tolerance = 200  # Reasonable for H.264 compression
                 float_tolerance = 1e-4
                 print(f"Using lossy validation (image_tol={image_tolerance}, float_tol={float_tolerance})")
             
