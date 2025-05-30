@@ -12,6 +12,7 @@ import h5py
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import sys
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -42,12 +43,107 @@ class StreamInfo:
         return self.__str__()
 
 
+class CodecConfig:
+    """Configuration class for video codec settings."""
+    
+    # Default codec configurations
+    CODEC_CONFIGS = {
+        "rawvideo": {
+            "pixel_format": None,  # No pixel format for rawvideo (binary)
+            "options": {}
+        },
+        "h264": {
+            "pixel_format": "yuv420p",
+            "options": {
+                "crf": "23",  # Default quality
+                "preset": "medium"
+            }
+        },
+        "h265": {
+            "pixel_format": "yuv420p", 
+            "options": {
+                "crf": "28",  # Default quality for HEVC
+                "preset": "medium"
+            }
+        },
+        "libaom-av1": {
+            "pixel_format": "yuv420p",
+            "options": {
+                "g": "2",
+                "crf": "30"
+            }
+        },
+        "ffv1": {
+            "pixel_format": "yuv420p",  # Default, will be adjusted based on content
+            "options": {}
+        }
+    }
+    
+    def __init__(self, codec: str = "auto", options: Dict[str, Any] = None):
+        """
+        Initialize codec configuration.
+        
+        Args:
+            codec: Video codec to use. Options: "auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1"
+            options: Additional codec-specific options
+        """
+        self.codec = codec
+        self.custom_options = options or {}
+        
+        if codec not in ["auto"] and codec not in self.CODEC_CONFIGS:
+            raise ValueError(f"Unsupported codec: {codec}. Supported: {list(self.CODEC_CONFIGS.keys())}")
+    
+    def get_codec_for_feature(self, feature_type: FeatureType) -> str:
+        """Determine the appropriate codec for a given feature type."""
+
+            
+        # Auto-selection logic based on feature characteristics
+        data_shape = feature_type.shape
+        if len(data_shape) >= 2 and data_shape[0] >= 100 and data_shape[1] >= 100:
+            # Large images - use efficient video codec
+            if self.codec != "auto":
+                return self.codec
+            return "libaom-av1"  # Default to AV1 for large images
+        else:
+            # Small data or non-image data - use rawvideo
+            return "rawvideo"
+    
+    def get_pixel_format(self, codec: str, feature_type: FeatureType) -> Optional[str]:
+        """Get appropriate pixel format for codec and feature type."""
+        if codec not in self.CODEC_CONFIGS:
+            return None
+            
+        base_format = self.CODEC_CONFIGS[codec]["pixel_format"]
+        if base_format is None:  # rawvideo case
+            return None
+            
+        # Adjust pixel format based on feature type
+        if len(feature_type.shape) == 3 and feature_type.shape[2] == 3:
+            # RGB image
+            return "yuv420p" if codec in ["h264", "h265", "libaom-av1", "ffv1"] else "rgb24"
+        elif len(feature_type.shape) == 2 or (len(feature_type.shape) == 3 and feature_type.shape[2] == 1):
+            # Grayscale image
+            return "gray"
+        else:
+            return base_format
+    
+    def get_codec_options(self, codec: str) -> Dict[str, Any]:
+        """Get codec options, merging defaults with custom options."""
+        if codec not in self.CODEC_CONFIGS:
+            return self.custom_options
+            
+        options = self.CODEC_CONFIGS[codec]["options"].copy()
+        options.update(self.custom_options)
+        return options
+
+
 class Trajectory:
     def __init__(
         self,
         path: Text,
         mode="r",
-        lossy_compression: bool = True,
+        video_codec: str = "auto",
+        codec_options: Optional[Dict[str, Any]] = None,
         feature_name_separator: Text = "/",
         filesystem: Optional[Any] = None,
         time_provider: Optional[Any] = None,
@@ -56,7 +152,8 @@ class Trajectory:
         Args:
             path (Text): path to the trajectory file
             mode (Text, optional):  mode of the file, "r" for read and "w" for write
-            lossy_compression (bool, optional): whether to use lossy compression. Defaults to True.
+            video_codec (str, optional): Video codec to use. Options: "auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1". Defaults to "auto".
+            codec_options (Dict[str, Any], optional): Additional codec-specific options.
             feature_name_separator (Text, optional):
                 Delimiter to separate feature names in the container file.
                 Defaults to "/".
@@ -65,6 +162,19 @@ class Trajectory:
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
+        
+        # Handle backward compatibility for a hypothetical old_lossy_param
+        # We are now removing the actual lossy_compression param
+        # old_lossy_param = kwargs.pop('lossy_compression', None) # Example if it were in kwargs
+        # if old_lossy_param is not None:
+        #     warnings.warn("lossy_compression parameter is deprecated. Use video_codec parameter instead.", UserWarning)
+        #     if old_lossy_param:
+        #         video_codec = "libaom-av1"
+        #     else:
+        #         video_codec = "ffv1"
+        
+        # Initialize codec configuration
+        self.codec_config = CodecConfig(video_codec, codec_options)
         
         # Dependency injection - set early so they're available during init
         self._filesystem = filesystem
@@ -77,7 +187,6 @@ class Trajectory:
         self.mode = mode
         self.stream_id_to_info = {}  # stream_id: StreamInfo
         self.is_closed = False
-        self.lossy_compression = lossy_compression
         self.pending_write_tasks = []  # List to keep track of pending write tasks
 
         # check if the path exists
@@ -328,13 +437,15 @@ class Trajectory:
             self.add(feature, value, timestamp)
 
     @classmethod
-    def from_list_of_dicts(cls, data: List[Dict[str, Any]], path: Text, lossy_compression: bool = True) -> "Trajectory":
+    def from_list_of_dicts(cls, data: List[Dict[str, Any]], path: Text, video_codec: str = "auto", codec_options: Optional[Dict[str, Any]] = None) -> "Trajectory":
         """
         Create a Trajectory object from a list of dictionaries.
 
         args:
             data (List[Dict[str, Any]]): list of dictionaries
             path (Text): path to the trajectory file
+            video_codec (str, optional): Video codec to use. Defaults to "auto".
+            codec_options (Dict[str, Any], optional): Additional codec-specific options.
 
         Example:
         original_trajectory = [
@@ -344,7 +455,7 @@ class Trajectory:
 
         trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/fog_x/output.vla")
         """
-        traj = cls(path, mode="w", lossy_compression=lossy_compression)
+        traj = cls(path, mode="w", video_codec=video_codec, codec_options=codec_options)
         logger.info(f"Creating a new trajectory file at {path} with {len(data)} steps")
         for step in data:
             traj.add_by_dict(step)
@@ -353,7 +464,7 @@ class Trajectory:
 
     @classmethod
     def from_dict_of_lists(
-        cls, data: Dict[str, List[Any]], path: Text, feature_name_separator: Text = "/", lossy_compression: bool = True
+        cls, data: Dict[str, List[Any]], path: Text, feature_name_separator: Text = "/", video_codec: str = "auto", codec_options: Optional[Dict[str, Any]] = None
     ) -> "Trajectory":
         """
         Create a Trajectory object from a dictionary of lists.
@@ -361,6 +472,9 @@ class Trajectory:
         Args:
             data (Dict[str, List[Any]]): dictionary of lists. Assume list length is the same for all features.
             path (Text): path to the trajectory file
+            feature_name_separator (Text, optional): Delimiter to separate feature names. Defaults to "/".
+            video_codec (str, optional): Video codec to use. Defaults to "auto".
+            codec_options (Dict[str, Any], optional): Additional codec-specific options.
 
         Returns:
             Trajectory: _description_
@@ -373,7 +487,7 @@ class Trajectory:
 
         trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/fog_x/output.vla")
         """
-        traj = cls(path, feature_name_separator=feature_name_separator, mode="w", lossy_compression = lossy_compression)
+        traj = cls(path, feature_name_separator=feature_name_separator, mode="w", video_codec=video_codec, codec_options=codec_options)
         # flatten the data such that all data starts and put feature name with separator
         _flatten_dict_data = _flatten_dict(data, sep=traj.feature_name_separator)
 
@@ -587,8 +701,9 @@ class Trajectory:
         feature_type = FeatureType.from_data(data)
         logger.debug(f"Encoding {stream.metadata.get('FEATURE_NAME')} with {encoding}, feature_type: {feature_type}")
         
-        if encoding == "ffv1" or encoding == "libaom-av1":
-            logger.debug("Using video encoding path")
+        # For video codecs, only attempt to create video frames if data is image-like (2D or 3D)
+        if encoding in ["ffv1", "libaom-av1", "h264", "h265"] and len(feature_type.shape) >= 2:
+            logger.debug("Using video encoding path for image-like data")
             if feature_type.dtype == "float32":
                 frame = self._create_frame_depth(data, stream)
             else:
@@ -600,7 +715,11 @@ class Trajectory:
             packets = stream.encode(frame)
             logger.debug(f"Stream encode returned {len(packets)} packets")
         else:
-            logger.debug("Using rawvideo encoding path")
+            if encoding in ["ffv1", "libaom-av1", "h264", "h265"]:
+                 logger.debug(f"Data is not image-like (shape: {feature_type.shape}). Using rawvideo (pickling) path for this packet despite stream encoding being {encoding}.")
+            else:
+                logger.debug("Using rawvideo encoding path")
+            
             packet = av.Packet(pickle.dumps(data))
             packet.dts = timestamp
             packet.pts = timestamp
@@ -610,10 +729,10 @@ class Trajectory:
 
             packets = [packet]
 
-        for packet in packets:
-            packet.pts = timestamp
-            packet.dts = timestamp
-            packet.time_base = stream.time_base
+        for packet_item in packets: # renamed to avoid conflict with outer scope 'packet'
+            packet_item.pts = timestamp
+            packet_item.dts = timestamp
+            packet_item.time_base = stream.time_base
         
         logger.debug(f"Returning {len(packets)} packets")
         return packets
@@ -696,34 +815,23 @@ class Trajectory:
 
     def _add_stream_to_container(self, container, feature_name, encoding, feature_type):
         stream = container.add_stream(encoding)
-        if encoding == "ffv1":
-            stream.width = feature_type.shape[1]
-            stream.height = feature_type.shape[0]
-            
-            # Set appropriate pixel format based on feature type for FFV1
-            if len(feature_type.shape) == 3 and feature_type.shape[2] == 3:
-                stream.pix_fmt = "yuv420p"  # FFV1 works better with YUV420p for RGB
-            elif len(feature_type.shape) == 2 or (len(feature_type.shape) == 3 and feature_type.shape[2] == 1):
-                stream.pix_fmt = "gray"
-            else:
-                stream.pix_fmt = "yuv420p"  # Default fallback
         
-        if encoding == "libaom-av1":
-            stream.width = feature_type.shape[1]
-            stream.height = feature_type.shape[0]
+        # Configure stream based on encoding type
+        if encoding in ["ffv1", "libaom-av1", "h264", "h265"]:
+            # Only set width/height if shape is 2D or more (image/video like)
+            if len(feature_type.shape) >= 2:
+                stream.width = feature_type.shape[1]
+                stream.height = feature_type.shape[0]
             
-            # Set appropriate pixel format based on feature type
-            if len(feature_type.shape) == 3 and feature_type.shape[2] == 3:
-                stream.pix_fmt = "yuv420p"  # AV1 typically uses YUV
-            elif len(feature_type.shape) == 2 or (len(feature_type.shape) == 3 and feature_type.shape[2] == 1):
-                stream.pix_fmt = "gray"
-            else:
-                stream.pix_fmt = "yuv420p"  # Default fallback
-                
-            stream.codec_context.options = {
-                "g": "2",
-                'crf': '30',  # Constant Rate Factor (quality)
-            }
+            # Set pixel format based on codec and feature type
+            pixel_format = self.codec_config.get_pixel_format(encoding, feature_type)
+            if pixel_format:
+                stream.pix_fmt = pixel_format
+            
+            # Set codec-specific options
+            codec_options = self.codec_config.get_codec_options(encoding)
+            if codec_options:
+                stream.codec_context.options = codec_options
 
         stream.metadata["FEATURE_NAME"] = feature_name
         stream.metadata["FEATURE_TYPE"] = str(feature_type)
@@ -737,8 +845,8 @@ class Trajectory:
         # Determine the correct format based on array shape and codec
         if len(image_array.shape) == 3 and image_array.shape[2] == 3:
             # RGB image
-            if encoding == "libaom-av1" or encoding == "ffv1":
-                # For AV1 and FFV1, convert RGB to YUV420p
+            if encoding in ["libaom-av1", "ffv1", "h264", "h265"]:
+                # For video codecs that prefer YUV, convert RGB to YUV420p
                 frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
                 frame = frame.reformat(format="yuv420p")
             else:
@@ -789,15 +897,8 @@ class Trajectory:
         """
         if feature_type is None:
             feature_type = FeatureType.from_data(feature_value)
-        data_shape = feature_type.shape
-        if len(data_shape) >= 2 and data_shape[0] >= 100 and data_shape[1] >= 100:
-            if self.lossy_compression:
-                vid_coding = "libaom-av1"
-            else:
-                vid_coding = "ffv1"
-        else:
-            vid_coding = "rawvideo"
-        return vid_coding
+        
+        return self.codec_config.get_codec_for_feature(feature_type)
 
     def save_stream_info(self):
         # serialize and save the stream info

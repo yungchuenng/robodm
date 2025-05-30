@@ -147,10 +147,10 @@ class BenchmarkDataset:
     """Helper class for creating benchmark datasets."""
     
     @staticmethod
-    def create_vla_dataset(path: str, data: Dict[str, List[Any]], lossy_compression: bool = True):
-        """Create a VLA dataset file."""
+    def create_vla_dataset(path: str, data: Dict[str, List[Any]], video_codec: str = "auto"):
+        """Create a VLA dataset file for testing."""
         from fog_x import Trajectory
-        traj = Trajectory.from_dict_of_lists(data, path, lossy_compression=lossy_compression)
+        traj = Trajectory.from_dict_of_lists(data, path, video_codec=video_codec)
         return traj
     
     @staticmethod

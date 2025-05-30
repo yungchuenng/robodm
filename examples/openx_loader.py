@@ -6,19 +6,13 @@ import fog_x
 import threading
 import time
 
-def process_data(data_traj, dataset_name, index, destination_dir, lossless):
+def process_data(data_traj, dataset_name, index, destination_dir, video_codec):
     try:
         data_traj = data_traj[0]
-        if lossless:
-            fog_x.Trajectory.from_list_of_dicts(
-                data_traj, path=f"{destination_dir}/{dataset_name}/output_{index}.vla",
-                lossy_compression=False
-            )
-        else:
-            fog_x.Trajectory.from_list_of_dicts(
-                data_traj, path=f"{destination_dir}/{dataset_name}/output_{index}.vla", 
-                lossy_compression=True,
-            )
+        fog_x.Trajectory.from_list_of_dicts(
+            data_traj, path=f"{destination_dir}/{dataset_name}/output_{index}.vla",
+            video_codec=video_codec
+        )
         print(f"Processed data {index}")
         return index, True
     except Exception as e:
@@ -26,73 +20,52 @@ def process_data(data_traj, dataset_name, index, destination_dir, lossless):
         return index, False
 
 def main():
-    parser = argparse.ArgumentParser(description="Process RLDS data and convert to VLA format.")
-    parser.add_argument("--data_dir", required=True, help="Path to the data directory")
-    parser.add_argument("--dataset_name", required=True, help="Name of the dataset")
-    parser.add_argument("--version", default="0.1.0", help="Dataset version")
-    parser.add_argument("--destination_dir", required=True, help="Destination directory for output files")
-    parser.add_argument("--split", default="train", help="Data split to use")
-    parser.add_argument("--max_workers", type=int, default=4, help="Maximum number of worker processes")
-    parser.add_argument("--lossless", action="store_true", help="Enable lossless compression for VLA format")
-
-    args = parser.parse_args()
-
-    loader = RLDSLoader(
-        path=f"{args.data_dir}/{args.dataset_name}/{args.version}", split=args.split, shuffling = False
-    )
-
-    # train[start:end]
-    try:
-        split_starting_index = int(args.split.split("[")[1].split(":")[0])
-        print(f"Starting index: {split_starting_index}")
-    except Exception as e:
-        print(f"Failed to get starting index: {e}")
-        split_starting_index = 0
+    parser = argparse.ArgumentParser(description="Convert OpenX datasets to VLA format")
+    parser.add_argument("--dataset_name", type=str, help="Name of the dataset to convert")
+    parser.add_argument("--data_dir", type=str, help="Directory containing the dataset")
+    parser.add_argument("--destination_dir", type=str, help="Destination directory for VLA files")
+    parser.add_argument("--max_episodes", type=int, default=None, help="Maximum number of episodes to process")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of worker processes")
+    parser.add_argument("--video_codec", type=str, default="auto", 
+                       choices=["auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1"],
+                       help="Video codec to use for encoding")
     
-    max_concurrent_tasks = args.max_workers
-    semaphore = threading.Semaphore(max_concurrent_tasks)
-
-    with ProcessPoolExecutor(max_workers=args.max_workers) as executor:
-        futures = []
-        retry_queue = []
-        try:
-            from tqdm import tqdm
-            for index, data_traj in tqdm(enumerate(loader), desc="Processing data", unit="trajectory"):
-                if index < split_starting_index:
-                    continue
-                semaphore.acquire()
-                future = executor.submit(process_data, data_traj, args.dataset_name, index, args.destination_dir, args.lossless)
-                future.add_done_callback(lambda x: semaphore.release())
-                futures.append(future)
-        except Exception as e:
-            print(f"Failed to process data: {e}")
-
+    args = parser.parse_args()
+    
+    # Create destination directory
+    os.makedirs(f"{args.destination_dir}/{args.dataset_name}", exist_ok=True)
+    
+    # Load dataset
+    loader = RLDSLoader(
+        dataset_name=args.dataset_name,
+        data_dir=args.data_dir,
+        shuffle=False
+    )
+    
+    trajectories = loader.load_trajectories()
+    if args.max_episodes:
+        trajectories = trajectories.take(args.max_episodes)
+    
+    # Process trajectories in parallel
+    futures = []
+    with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+        for i, data_traj in enumerate(trajectories):
+            future = executor.submit(
+                process_data, data_traj, args.dataset_name, i, 
+                args.destination_dir, args.video_codec
+            )
+            futures.append(future)
+        
+        # Collect results
+        success_count = 0
+        total_count = 0
         for future in as_completed(futures):
-            try:
-                index, success = future.result()
-                if not success:
-                    retry_queue.append((index, data_traj))
-            except Exception as e:
-                print(f"Error processing future: {e}")
-
-    # Retry failed tasks
-    if retry_queue:
-        print(f"Retrying {len(retry_queue)} failed tasks...")
-        with ProcessPoolExecutor(max_workers=args.max_workers) as retry_executor:
-            retry_futures = []
-            for index, data_traj in retry_queue:
-                future = retry_executor.submit(process_data, data_traj, args.dataset_name, index, args.destination_dir, args.lossless)
-                retry_futures.append(future)
-            
-            for future in as_completed(retry_futures):
-                try:
-                    index, success = future.result()
-                    if not success:
-                        print(f"Failed to process data {index} after retry")
-                except Exception as e:
-                    print(f"Error processing retry future: {e}")
-
-    print("All tasks completed.")
+            index, success = future.result()
+            total_count += 1
+            if success:
+                success_count += 1
+    
+    print(f"Conversion complete: {success_count}/{total_count} trajectories processed successfully")
 
 if __name__ == "__main__":
     main()

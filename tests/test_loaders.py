@@ -23,7 +23,7 @@ class TestNonShuffleVLALoader:
             path = os.path.join(temp_dir, f"test_{i}.vla")
             # Create smaller datasets for faster testing
             small_data = {k: v[:5] for k, v in large_sample_data.items()}
-            Trajectory.from_dict_of_lists(small_data, path, lossy_compression=False)
+            Trajectory.from_dict_of_lists(small_data, path, video_codec="ffv1")
             paths.append(path)
         
         # Test loading
@@ -45,7 +45,7 @@ class TestNonShuffleVLALoader:
         # Create VLA file
         path = os.path.join(temp_dir, "test.vla")
         small_data = {k: v[:10] for k, v in large_sample_data.items()}
-        Trajectory.from_dict_of_lists(small_data, path, lossy_compression=False)
+        Trajectory.from_dict_of_lists(small_data, path, video_codec="ffv1")
         
         # Test with batch size
         from fog_x.loader.vla import get_vla_dataloader
@@ -144,7 +144,7 @@ class TestLoaderComparison:
         }
         
         # Create both formats
-        Trajectory.from_dict_of_lists(deterministic_data, vla_path, lossy_compression=False)
+        Trajectory.from_dict_of_lists(deterministic_data, vla_path, video_codec="ffv1")
         benchmark_dataset.create_hdf5_dataset(h5_path, deterministic_data)
         
         # Load via both loaders
@@ -219,7 +219,7 @@ class TestLoaderPerformance:
         """Test VLA loader memory efficiency."""
         # Create VLA file
         path = os.path.join(temp_dir, "large_test.vla")
-        Trajectory.from_dict_of_lists(large_sample_data, path, lossy_compression=False)
+        Trajectory.from_dict_of_lists(large_sample_data, path, video_codec="ffv1")
         
         # Load and measure (basic test - would need memory profiling for real measurement)
         loader = NonShuffleVLALoader(path)

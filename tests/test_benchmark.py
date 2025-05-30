@@ -82,10 +82,10 @@ class BenchmarkRunner:
     def benchmark_vla_format(
         self, 
         data: Dict[str, List[Any]], 
-        lossy_compression: bool = False
+        video_codec: str = "ffv1"
     ) -> BenchmarkResult:
         """Benchmark VLA format creation and loading."""
-        format_name = f"VLA_{'lossy' if lossy_compression else 'lossless'}"
+        format_name = f"VLA_{video_codec}"
         path = os.path.join(self.temp_dir, f"{format_name.lower()}.vla")
         
         # Benchmark creation
@@ -93,7 +93,7 @@ class BenchmarkRunner:
         traj = Trajectory.from_dict_of_lists(
             data, 
             path, 
-            lossy_compression=lossy_compression
+            video_codec=video_codec
         )
         creation_time = time.time() - start_time
         
@@ -274,8 +274,8 @@ class BenchmarkRunner:
         results = []
         
         # Benchmark VLA formats
-        results.append(self.benchmark_vla_format(data, lossy_compression=False))
-        results.append(self.benchmark_vla_format(data, lossy_compression=True))
+        results.append(self.benchmark_vla_format(data, video_codec="ffv1"))
+        results.append(self.benchmark_vla_format(data, video_codec="h264"))
         
         # Benchmark HDF5
         results.append(self.benchmark_hdf5_format(data))
@@ -344,8 +344,8 @@ class TestBenchmark:
             assert result.num_samples == 50
         
         # VLA lossy should generally be smaller than lossless
-        vla_lossy = next((r for r in results if r.format_name == "VLA_lossy"), None)
-        vla_lossless = next((r for r in results if r.format_name == "VLA_lossless"), None)
+        vla_lossy = next((r for r in results if r.format_name == "VLA_h264"), None)
+        vla_lossless = next((r for r in results if r.format_name == "VLA_ffv1"), None)
         
         if vla_lossy and vla_lossless:
             # Lossy should have higher compression ratio (smaller file)
@@ -424,7 +424,7 @@ class TestBenchmark:
         print(f"Largest file: {largest.format_name} ({largest.file_size_mb:.2f}MB)")
         
         # VLA lossy should generally be among the smallest
-        vla_lossy = next((r for r in results if r.format_name == "VLA_lossy"), None)
+        vla_lossy = next((r for r in results if r.format_name == "VLA_h264"), None)
         if vla_lossy:
             # Should be in the smaller half of file sizes
             median_size = sorted([r.file_size_mb for r in results])[len(results)//2]
@@ -491,8 +491,8 @@ class TestBenchmarkIntegration:
         results = []
         
         # Test each format
-        for lossy in [False, True]:
-            result = runner.benchmark_vla_format(data, lossy_compression=lossy)
+        for video_codec in ["ffv1", "h264"]:
+            result = runner.benchmark_vla_format(data, video_codec=video_codec)
             results.append(result)
         
         result = runner.benchmark_hdf5_format(data)
