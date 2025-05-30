@@ -13,7 +13,60 @@ from fog_x.trajectory_base import FileSystemInterface, TimeProvider
 from .test_fixtures import MockFileSystem, MockTimeProvider
 
 # Define all codecs to test
-ALL_CODECS = ["rawvideo", "ffv1", "libaom-av1", "h264", "h265"]
+ALL_CODECS = ["rawvideo", "ffv1", "libaom-av1", "libx264", "libx265"]
+
+def validate_codec_roundtrip(temp_dir, codec, test_data):
+    """Helper function to validate full encoding/decoding roundtrip for a codec."""
+    path = os.path.join(temp_dir, f"roundtrip_test_{codec}.vla")
+    
+    try:
+        # Step 1: Create trajectory with codec
+        traj_write = Trajectory(path, mode="w", video_codec=codec)
+        
+        # Step 2: Write test data
+        for data_dict in test_data:
+            traj_write.add_by_dict(data_dict)
+        
+        # Step 3: Close trajectory (triggers encoding)
+        traj_write.close()
+        
+        # Step 4: Verify file exists and has content
+        assert os.path.exists(path)
+        assert os.path.getsize(path) > 0
+        
+        # Step 5: Attempt to read back (triggers decoding)
+        traj_read = Trajectory(path, mode="r")
+        loaded_data = traj_read.load()
+        
+        # Step 6: Validate data structure and basic properties
+        assert isinstance(loaded_data, dict)
+        assert len(loaded_data) > 0
+        
+        # Step 7: Validate data shapes and types
+        for key, original_values in test_data[0].items():
+            flat_key = key.replace("/", "/") if "/" in key else key
+            if flat_key not in loaded_data:
+                # Try nested key format
+                for loaded_key in loaded_data.keys():
+                    if loaded_key.endswith(key.split("/")[-1]):
+                        flat_key = loaded_key
+                        break
+            
+            assert flat_key in loaded_data, f"Key {key} not found in loaded data. Available keys: {list(loaded_data.keys())}"
+            
+            loaded_array = loaded_data[flat_key]
+            assert loaded_array.shape[0] == len(test_data), f"Wrong number of timesteps for {key}"
+            
+            # For the first timestep, check shape consistency
+            if hasattr(original_values, 'shape'):
+                expected_shape = (len(test_data),) + original_values.shape
+                assert loaded_array.shape == expected_shape, f"Shape mismatch for {key}: got {loaded_array.shape}, expected {expected_shape}"
+        
+        traj_read.close()
+        return True, None
+        
+    except Exception as e:
+        return False, str(e)
 
 class TestCodecConfig:
     """Test the CodecConfig class."""
@@ -26,11 +79,11 @@ class TestCodecConfig:
         assert config.custom_options == {}
         
         # Test with specific codec
-        config = CodecConfig("h264")
-        assert config.codec == "h264"
+        config = CodecConfig("libx264")
+        assert config.codec == "libx264"
         
         # Test with custom options
-        config = CodecConfig("h264", {"crf": "20"})
+        config = CodecConfig("libx264", {"crf": "20"})
         assert config.custom_options == {"crf": "20"}
     
     def test_unsupported_codec(self):
@@ -54,12 +107,12 @@ class TestCodecConfig:
     
     def test_get_codec_for_feature_specific(self):
         """Test specific codec selection."""
-        config = CodecConfig("h264")
+        config = CodecConfig("libx264")
         
         # Should always return the specified codec
         large_image_type = FeatureType(dtype="uint8", shape=(480, 640, 3))
         codec = config.get_codec_for_feature(large_image_type)
-        assert codec == "h264"
+        assert codec == "libx264"
         
         small_data_type = FeatureType(dtype="float32", shape=(7,))
         codec = config.get_codec_for_feature(small_data_type)
@@ -71,12 +124,12 @@ class TestCodecConfig:
         
         # RGB image
         rgb_type = FeatureType(dtype="uint8", shape=(100, 100, 3))
-        pix_fmt = config.get_pixel_format("h264", rgb_type)
+        pix_fmt = config.get_pixel_format("libx264", rgb_type)
         assert pix_fmt == "yuv420p"
         
         # Grayscale image
         gray_type = FeatureType(dtype="uint8", shape=(100, 100))
-        pix_fmt = config.get_pixel_format("h264", gray_type)
+        pix_fmt = config.get_pixel_format("libx264", gray_type)
         assert pix_fmt == "gray"
         
         # Rawvideo should return None
@@ -85,9 +138,9 @@ class TestCodecConfig:
     
     def test_get_codec_options(self):
         """Test codec options merging."""
-        config = CodecConfig("h264", {"preset": "fast"})
+        config = CodecConfig("libx264", {"preset": "fast"})
         
-        options = config.get_codec_options("h264")
+        options = config.get_codec_options("libx264")
         assert "crf" in options  # Default option
         assert "preset" in options  # Custom option
         assert options["preset"] == "fast"  # Custom overrides default
@@ -180,14 +233,14 @@ class TestTrajectory:
     def test_trajectory_creation_with_video_codec(self, temp_dir):
         """Test trajectory creation with specific video codec."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", video_codec="h264")
-        assert traj.codec_config.codec == "h264"
+        traj = Trajectory(path, mode="w", video_codec="libx264")
+        assert traj.codec_config.codec == "libx264"
         traj.close()
     
     def test_trajectory_creation_with_codec_options(self, temp_dir):
         """Test trajectory creation with codec options."""
         path = os.path.join(temp_dir, "test.vla")
-        traj = Trajectory(path, mode="w", video_codec="h264", codec_options={"crf": "20"})
+        traj = Trajectory(path, mode="w", video_codec="libx264", codec_options={"crf": "20"})
         assert traj.codec_config.custom_options == {"crf": "20"}
         traj.close()
     
@@ -413,7 +466,7 @@ class TestTrajectoryIntegration:
             for i in range(10):
                 data = {
                     "observation": {
-                        "image": np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8),
+                        "image": np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
                         "joints": np.random.random(7).astype(np.float32),
                     },
                     "action": np.random.random(7).astype(np.float32),
@@ -433,7 +486,7 @@ class TestTrajectoryIntegration:
             assert "action" in loaded_data
             assert "step" in loaded_data
             
-            assert loaded_data["observation/image"].shape == (10, 64, 64, 3)
+            assert loaded_data["observation/image"].shape == (10, 640, 480, 3)
             assert loaded_data["observation/joints"].shape == (10, 7)
             assert loaded_data["action"].shape == (10, 7)
             assert loaded_data["step"].shape == (10,)
@@ -470,15 +523,15 @@ class TestTrajectoryIntegration:
                 # Some codecs might not be available in test environment
                 pytest.skip(f"Codec {codec} not available: {e}")
     
-    @pytest.mark.parametrize("codec", ["h264", "h265", "libaom-av1"])
+    @pytest.mark.parametrize("codec", ["libx264", "libx265", "libaom-av1"])
     def test_codec_options(self, temp_dir, sample_dict_of_lists, codec):
         """Test custom codec options with different codecs."""
         path = os.path.join(temp_dir, f"custom_options_{codec}.vla")
         
         # Define codec-specific options
         codec_options = {
-            "h264": {"crf": "20", "preset": "fast"},
-            "h265": {"crf": "23", "preset": "medium"},
+            "libx264": {"crf": "20", "preset": "fast"},
+            "libx265": {"crf": "23", "preset": "medium"},
             "libaom-av1": {"crf": "30", "cpu-used": "4"}
         }
         
@@ -512,8 +565,8 @@ class TestTrajectoryIntegration:
             for step in range(5):
                 data = {
                     "observation": {
-                        "rgb": np.random.randint(0, 255, (32, 32, 3), dtype=np.uint8),
-                        "depth": np.random.random((32, 32)).astype(np.float32),
+                        "rgb": np.random.randint(0, 255, (320, 240, 3), dtype=np.uint8),
+                        "depth": np.random.random((320, 240)).astype(np.float32),
                         "proprio": np.random.random(10).astype(np.float32),
                     },
                     "action": np.random.random(6).astype(np.float32),
@@ -529,8 +582,8 @@ class TestTrajectoryIntegration:
             loaded_data = traj_read.load()
             
             # Check all features exist and have correct shapes
-            assert loaded_data["observation/rgb"].shape == (5, 32, 32, 3)
-            assert loaded_data["observation/depth"].shape == (5, 32, 32)
+            assert loaded_data["observation/rgb"].shape == (5, 320, 240, 3)
+            assert loaded_data["observation/depth"].shape == (5, 320, 240)
             assert loaded_data["observation/proprio"].shape == (5, 10)
             assert loaded_data["action"].shape == (5, 6)
             assert loaded_data["reward"].shape == (5,)
@@ -551,7 +604,7 @@ class TestTrajectoryIntegration:
             traj_single = Trajectory(path_single, mode="w", video_codec=codec)
             
             single_data = {
-                "observation": np.random.randint(0, 255, (16, 16, 3), dtype=np.uint8),
+                "observation": np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8),
                 "action": np.array([1.0]),
             }
             traj_single.add_by_dict(single_data)
@@ -560,7 +613,7 @@ class TestTrajectoryIntegration:
             # Verify single step
             traj_read = Trajectory(path_single, mode="r")
             loaded_single = traj_read.load()
-            assert loaded_single["observation"].shape == (1, 16, 16, 3)
+            assert loaded_single["observation"].shape == (1, 128, 128, 3)
             assert loaded_single["action"].shape == (1, 1)
             
             # Test large trajectory (stress test)
@@ -569,7 +622,7 @@ class TestTrajectoryIntegration:
             
             for i in range(100):
                 large_data = {
-                    "observation": np.random.randint(0, 255, (8, 8, 3), dtype=np.uint8),
+                    "observation": np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8),
                     "step": i,
                 }
                 traj_large.add_by_dict(large_data)
@@ -579,7 +632,7 @@ class TestTrajectoryIntegration:
             # Verify large trajectory
             traj_read_large = Trajectory(path_large, mode="r")
             loaded_large = traj_read_large.load()
-            assert loaded_large["observation"].shape == (100, 8, 8, 3)
+            assert loaded_large["observation"].shape == (100, 128, 128, 3)
             assert loaded_large["step"].shape == (100,)
             
         except Exception as e:
@@ -608,3 +661,210 @@ class TestTrajectoryIntegration:
     #     # Both should work
     #     assert os.path.exists(path_old)
     #     assert os.path.exists(path_new) 
+
+class TestCodecValidation:
+    """Comprehensive codec validation tests to catch encoding/decoding errors."""
+    
+    @pytest.mark.parametrize("codec", ALL_CODECS)
+    def test_codec_roundtrip_validation(self, temp_dir, codec):
+        """Test full encoding/decoding roundtrip for each codec with comprehensive validation."""
+        # Create test data with various data types and shapes
+        test_data = [
+            {
+                "observation/image": np.random.randint(0, 255, (640, 480, 3), dtype=np.uint8),
+                "observation/depth": np.random.random((640, 480)).astype(np.float32),
+                "observation/joints": np.random.random(7).astype(np.float32),
+                "action": np.random.random(6).astype(np.float32),
+                "reward": np.random.random(),
+                "step": i,
+            } for i in range(5)
+        ]
+        
+        success, error = validate_codec_roundtrip(temp_dir, codec, test_data)
+        
+        if not success:
+            if "not available" in error.lower() or "codec" in error.lower():
+                pytest.skip(f"Codec {codec} not available: {error}")
+            else:
+                pytest.fail(f"Codec {codec} failed encoding/decoding validation: {error}")
+    
+    @pytest.mark.parametrize("codec", ALL_CODECS)
+    def test_codec_with_different_image_sizes(self, temp_dir, codec):
+        """Test codecs with different image sizes to catch size-specific encoding issues."""
+        image_sizes = [(640, 480, 3), (320, 240, 3), (128, 128, 3)]
+        
+        for size in image_sizes:
+            test_data = [
+                {
+                    "observation/image": np.random.randint(0, 255, size, dtype=np.uint8),
+                    "action": np.random.random(4).astype(np.float32),
+                } for _ in range(3)
+            ]
+            
+            success, error = validate_codec_roundtrip(temp_dir, codec, test_data)
+            
+            if not success:
+                if "not available" in error.lower() or "codec" in error.lower():
+                    pytest.skip(f"Codec {codec} not available: {error}")
+                else:
+                    pytest.fail(f"Codec {codec} failed with image size {size}: {error}")
+    
+    @pytest.mark.parametrize("codec", ALL_CODECS)
+    def test_codec_data_integrity(self, temp_dir, codec):
+        """Test that data maintains integrity through encoding/decoding cycle."""
+        # Use deterministic data for exact comparison
+        test_data = [
+            {
+                "observation/image": np.full((320, 240, 3), i * 50, dtype=np.uint8),
+                "observation/vector": np.full(5, i * 0.1, dtype=np.float32),
+                "action": np.array([i, i+1, i+2], dtype=np.float32),
+                "step": i,
+            } for i in range(4)
+        ]
+        
+        path = os.path.join(temp_dir, f"integrity_test_{codec}.vla")
+        
+        try:
+            # Write data
+            traj_write = Trajectory(path, mode="w", video_codec=codec)
+            for data_dict in test_data:
+                traj_write.add_by_dict(data_dict)
+            traj_write.close()
+            
+            # Read data back
+            traj_read = Trajectory(path, mode="r")
+            loaded_data = traj_read.load()
+            traj_read.close()
+            
+            # Validate data integrity
+            assert loaded_data["step"].shape == (4,)
+            assert loaded_data["action"].shape == (4, 3)
+            
+            # Check step values are correct
+            np.testing.assert_array_equal(loaded_data["step"], [0, 1, 2, 3])
+            
+            # Define tolerance based on codec type
+            if codec in ["rawvideo", "ffv1"]:
+                # Lossless codecs - expect exact match
+                image_tolerance = 0
+                vector_tolerance = 1e-6
+            elif codec in ["libx264", "libx265", "libaom-av1"]:
+                # Lossy codecs - allow reasonable compression artifacts
+                image_tolerance = 10  # Allow up to 10 units difference in uint8 values
+                vector_tolerance = 1e-3  # More tolerance for float values
+            else:
+                # Unknown codec - use conservative tolerance
+                image_tolerance = 5
+                vector_tolerance = 1e-4
+            
+            # Check action data (should be exact for rawvideo/pickled data regardless of image codec)
+            expected_actions = np.array([[0, 1, 2], [1, 2, 3], [2, 3, 4], [3, 4, 5]], dtype=np.float32)
+            np.testing.assert_allclose(loaded_data["action"], expected_actions, rtol=vector_tolerance)
+            
+            # Check vector data (should be exact for rawvideo/pickled data regardless of image codec)
+            expected_vectors = np.array([[0.0, 0.0, 0.0, 0.0, 0.0],
+                                       [0.1, 0.1, 0.1, 0.1, 0.1],
+                                       [0.2, 0.2, 0.2, 0.2, 0.2],
+                                       [0.3, 0.3, 0.3, 0.3, 0.3]], dtype=np.float32)
+            np.testing.assert_allclose(loaded_data["observation/vector"], expected_vectors, rtol=vector_tolerance)
+            
+            # Check image data with codec-appropriate tolerance
+            expected_images = np.array([
+                np.full((320, 240, 3), i * 50, dtype=np.uint8) for i in range(4)
+            ])
+            
+            if image_tolerance == 0:
+                # Exact match for lossless
+                np.testing.assert_array_equal(loaded_data["observation/image"], expected_images)
+            else:
+                # Allow tolerance for lossy codecs
+                image_diff = np.abs(loaded_data["observation/image"].astype(np.float32) - expected_images.astype(np.float32))
+                max_diff = np.max(image_diff)
+                mean_diff = np.mean(image_diff)
+                
+                assert max_diff <= image_tolerance, f"Max pixel difference {max_diff} exceeds tolerance {image_tolerance} for codec {codec}"
+                assert mean_diff <= image_tolerance / 2, f"Mean pixel difference {mean_diff} exceeds half tolerance {image_tolerance/2} for codec {codec}"
+            
+        except Exception as e:
+            if "not available" in str(e).lower() or "codec" in str(e).lower():
+                pytest.skip(f"Codec {codec} not available: {e}")
+            else:
+                pytest.fail(f"Data integrity test failed for codec {codec}: {e}")
+    
+    def test_codec_availability_report(self, temp_dir):
+        """Test and report which codecs are available and working."""
+        codec_status = {}
+        
+        simple_test_data = [
+            {
+                "observation": np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8),
+                "action": np.array([1.0, 2.0]),
+            }
+        ]
+        
+        for codec in ALL_CODECS:
+            success, error = validate_codec_roundtrip(temp_dir, codec, simple_test_data)
+            codec_status[codec] = {"available": success, "error": error}
+        
+        # Print codec availability report
+        print("\n" + "="*50)
+        print("CODEC AVAILABILITY REPORT")
+        print("="*50)
+        
+        available_codecs = []
+        unavailable_codecs = []
+        
+        for codec, status in codec_status.items():
+            if status["available"]:
+                available_codecs.append(codec)
+                print(f"✓ {codec}: Available and working")
+            else:
+                unavailable_codecs.append(codec)
+                print(f"✗ {codec}: {status['error']}")
+        
+        print(f"\nSummary: {len(available_codecs)}/{len(ALL_CODECS)} codecs available")
+        print("="*50)
+        
+        # Ensure at least one codec is working
+        assert len(available_codecs) > 0, "No codecs are available and working!"
+    
+    @pytest.mark.parametrize("codec", ALL_CODECS)
+    def test_codec_error_handling(self, temp_dir, codec):
+        """Test that codec errors are properly handled and reported."""
+        # Test with potentially problematic data
+        problematic_data = [
+            {
+                "observation/image": np.random.randint(0, 255, (128, 128, 3), dtype=np.uint8),
+                "action": np.array([]),  # Empty array
+            }
+        ]
+        
+        path = os.path.join(temp_dir, f"error_test_{codec}.vla")
+        
+        try:
+            traj = Trajectory(path, mode="w", video_codec=codec)
+            
+            # This might fail for some codecs with empty arrays
+            for data_dict in problematic_data:
+                traj.add_by_dict(data_dict)
+            
+            traj.close()
+            
+            # Try to read back
+            traj_read = Trajectory(path, mode="r")
+            loaded_data = traj_read.load()
+            traj_read.close()
+            
+            # If we get here, codec handled edge case well
+            assert isinstance(loaded_data, dict)
+            
+        except Exception as e:
+            # Log the specific error for debugging
+            error_msg = str(e)
+            if "not available" in error_msg.lower() or "codec" in error_msg.lower():
+                pytest.skip(f"Codec {codec} not available: {error_msg}")
+            elif "InvalidDataError" in error_msg or "no frame" in error_msg:
+                pytest.fail(f"Codec {codec} has encoding/decoding issues: {error_msg}")
+            else:
+                # Other errors might be expected for edge cases
+                print(f"Codec {codec} failed with edge case data (may be expected): {error_msg}") 

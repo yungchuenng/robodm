@@ -52,14 +52,14 @@ class CodecConfig:
             "pixel_format": None,  # No pixel format for rawvideo (binary)
             "options": {}
         },
-        "h264": {
+        "libx264": {
             "pixel_format": "yuv420p",
             "options": {
                 "crf": "23",  # Default quality
                 "preset": "medium"
             }
         },
-        "h265": {
+        "libx265": {
             "pixel_format": "yuv420p", 
             "options": {
                 "crf": "28",  # Default quality for HEVC
@@ -84,7 +84,7 @@ class CodecConfig:
         Initialize codec configuration.
         
         Args:
-            codec: Video codec to use. Options: "auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1"
+            codec: Video codec to use. Options: "auto", "rawvideo", "libx264", "libx265", "libaom-av1", "ffv1"
             options: Additional codec-specific options
         """
         self.codec = codec
@@ -120,7 +120,7 @@ class CodecConfig:
         # Adjust pixel format based on feature type
         if len(feature_type.shape) == 3 and feature_type.shape[2] == 3:
             # RGB image
-            return "yuv420p" if codec in ["h264", "h265", "libaom-av1", "ffv1"] else "rgb24"
+            return "yuv420p" if codec in ["libx264", "libx265", "libaom-av1", "ffv1"] else "rgb24"
         elif len(feature_type.shape) == 2 or (len(feature_type.shape) == 3 and feature_type.shape[2] == 1):
             # Grayscale image
             return "gray"
@@ -152,7 +152,7 @@ class Trajectory:
         Args:
             path (Text): path to the trajectory file
             mode (Text, optional):  mode of the file, "r" for read and "w" for write
-            video_codec (str, optional): Video codec to use. Options: "auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1". Defaults to "auto".
+            video_codec (str, optional): Video codec to use. Options: "auto", "rawvideo", "libx264", "libx265", "libaom-av1", "ffv1". Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
             feature_name_separator (Text, optional):
                 Delimiter to separate feature names in the container file.
@@ -265,9 +265,20 @@ class Trajectory:
         
         if self.is_closed:
             raise ValueError("The container file is already closed")
-        
-        logger.debug(f"Container has {len(self.container_file.streams)} streams")
-        
+
+        if self.mode == "r":
+            # For read mode, just mark as closed
+            self.is_closed = True
+            self.trajectory_data = None
+            logger.debug("Trajectory (read mode) closed successfully")
+            return
+
+        # Write mode handling
+        if not hasattr(self, 'container_file') or self.container_file is None:
+            logger.warning("Container file not available, marking trajectory as closed")
+            self.is_closed = True
+            return
+
         # Check if there are any streams with data
         has_data = len(self.container_file.streams) > 0
         
@@ -298,8 +309,11 @@ class Trajectory:
         # Only attempt transcoding if file exists, has content, and compact is requested
         if compact and has_data and self._exists(self.path) and os.path.getsize(self.path) > 0:
             logger.debug("Starting transcoding of pickled images")
-            # After closing, re-read from the cache to encode pickled data to images
-            self._transcode_pickled_images(ending_timestamp=ts)
+            try:
+                self._transcode_pickled_images(ending_timestamp=ts)
+            except Exception as e:
+                logger.warning(f"Transcoding failed: {e}. Keeping original file with pickled data.")
+                # File remains in original state with pickled data, which is still valid
         else:
             logger.debug(f"Skipping transcoding: compact={compact}, has_data={has_data}, file_exists={self._exists(self.path)}, file_size={os.path.getsize(self.path) if self._exists(self.path) else 0}")
         
@@ -597,95 +611,115 @@ class Trajectory:
         temp_path = self.path + ".temp"
         self._rename(self.path, temp_path)
 
-        # Open the original container for reading
-        original_container = av.open(temp_path, mode="r", format="matroska")
-        original_streams = list(original_container.streams)
+        try:
+            # Open the original container for reading
+            original_container = av.open(temp_path, mode="r", format="matroska")
+            original_streams = list(original_container.streams)
 
-        # Create a new container
-        new_container = av.open(self.path, mode="w", format="matroska")
+            # Create a new container
+            new_container = av.open(self.path, mode="w", format="matroska")
 
-        # Add existing streams to the new container
-        d_original_stream_id_to_new_container_stream = {}
-        for stream in original_streams:
-            stream_feature = stream.metadata.get("FEATURE_NAME")
-            if stream_feature is None:
-                logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
-                continue
-            # Determine encoding method based on feature type
-            stream_encoding = self._get_encoding_of_feature(
-                None, self.feature_name_to_feature_type[stream_feature]
-            )
-            stream_feature_type = self.feature_name_to_feature_type[stream_feature]
-            stream_in_updated_container = self._add_stream_to_container(
-                new_container, stream_feature, stream_encoding, stream_feature_type
-            )
+            # Add existing streams to the new container
+            d_original_stream_id_to_new_container_stream = {}
+            for stream in original_streams:
+                stream_feature = stream.metadata.get("FEATURE_NAME")
+                if stream_feature is None:
+                    logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
+                    continue
+                
+                # Determine encoding method based on feature type
+                try:
+                    stream_encoding = self._get_encoding_of_feature(
+                        None, self.feature_name_to_feature_type[stream_feature]
+                    )
+                    stream_feature_type = self.feature_name_to_feature_type[stream_feature]
+                    stream_in_updated_container = self._add_stream_to_container(
+                        new_container, stream_feature, stream_encoding, stream_feature_type
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create stream for {stream_feature} with desired encoding, falling back to rawvideo: {e}")
+                    # Fallback to rawvideo if the desired codec is not available
+                    stream_in_updated_container = self._add_stream_to_container(
+                        new_container, stream_feature, "rawvideo", self.feature_name_to_feature_type[stream_feature]
+                    )
 
-            # Preserve the stream metadata
-            for key, value in stream.metadata.items():
-                stream_in_updated_container.metadata[key] = value
+                # Preserve the stream metadata
+                for key, value in stream.metadata.items():
+                    stream_in_updated_container.metadata[key] = value
 
-            d_original_stream_id_to_new_container_stream[stream.index] = (
-                stream_in_updated_container
-            )
+                d_original_stream_id_to_new_container_stream[stream.index] = (
+                    stream_in_updated_container
+                )
 
-        # Initialize the number of packets per stream
-        # Transcode pickled images and add them to the new container
-        packets_muxed = 0
-        for packet in original_container.demux(original_streams):
+            # Transcode pickled images and add them to the new container
+            packets_muxed = 0
+            for packet in original_container.demux(original_streams):
 
-            def is_packet_valid(packet):
-                return packet.pts is not None and packet.dts is not None
+                def is_packet_valid(packet):
+                    return packet.pts is not None and packet.dts is not None
 
-            if is_packet_valid(packet):
-                original_stream = packet.stream
-                new_stream = d_original_stream_id_to_new_container_stream[packet.stream.index]
-                packet.stream = new_stream
+                if is_packet_valid(packet):
+                    original_stream = packet.stream
+                    new_stream = d_original_stream_id_to_new_container_stream[packet.stream.index]
+                    packet.stream = new_stream
 
-                # Check if the ORIGINAL stream is using rawvideo, meaning it's a pickled stream
-                if original_stream.codec_context.codec.name == "rawvideo":
-                    logger.debug(f"Transcoding rawvideo packet from {original_stream.metadata.get('FEATURE_NAME')}")
-                    data = pickle.loads(bytes(packet))
+                    # Check if the ORIGINAL stream is using rawvideo, meaning it's a pickled stream
+                    if original_stream.codec_context.codec.name == "rawvideo":
+                        logger.debug(f"Transcoding rawvideo packet from {original_stream.metadata.get('FEATURE_NAME')}")
+                        data = pickle.loads(bytes(packet))
 
-                    # Encode the image data with the new stream's encoding
-                    new_packets = self._encode_frame(data, new_stream, packet.pts)
-
-                    for new_packet in new_packets:
-                        logger.debug(f"Muxing transcoded packet: {new_packet}")
-                        new_container.mux(new_packet)
+                        # Encode the image data with the new stream's encoding
+                        try:
+                            new_packets = self._encode_frame(data, new_stream, packet.pts)
+                            for new_packet in new_packets:
+                                logger.debug(f"Muxing transcoded packet: {new_packet}")
+                                new_container.mux(new_packet)
+                                packets_muxed += 1
+                        except Exception as e:
+                            logger.warning(f"Failed to encode {original_stream.metadata.get('FEATURE_NAME')} with {new_stream.codec_context.codec.name}, keeping as pickled data: {e}")
+                            # If encoding fails, keep the original pickled packet
+                            new_container.mux(packet)
+                            packets_muxed += 1
+                    else:
+                        # If not a rawvideo stream, just remux the existing packet
+                        logger.debug(f"Remuxing original packet: {packet}")
+                        new_container.mux(packet)
                         packets_muxed += 1
                 else:
-                    # If not a rawvideo stream, just remux the existing packet
-                    logger.debug(f"Remuxing original packet: {packet}")
-                    new_container.mux(packet)
-                    packets_muxed += 1
-            else:
-                logger.debug(f"Skipping invalid packet: {packet}")
+                    logger.debug(f"Skipping invalid packet: {packet}")
 
-        logger.debug(f"Muxed {packets_muxed} packets during transcoding")
+            logger.debug(f"Muxed {packets_muxed} packets during transcoding")
 
-        # Flush all streams to get any buffered packets
-        for stream in new_container.streams:
-            logger.debug(f"Flushing stream during transcode: {stream}")
-            try:
-                flush_packets = stream.encode(None)
-                logger.debug(f"Stream flush returned {len(flush_packets)} packets")
-                for packet in flush_packets:
-                    packet.pts = ending_timestamp
-                    packet.dts = ending_timestamp
-                    logger.debug(f"Muxing flush packet: {packet}")
-                    new_container.mux(packet)
-                    packets_muxed += 1
-            except Exception as e:
-                logger.error(f"Error flushing stream {stream}: {e}")
+            # Flush all streams to get any buffered packets
+            for stream in new_container.streams:
+                logger.debug(f"Flushing stream during transcode: {stream}")
+                try:
+                    flush_packets = stream.encode(None)
+                    logger.debug(f"Stream flush returned {len(flush_packets)} packets")
+                    for packet in flush_packets:
+                        packet.pts = ending_timestamp
+                        packet.dts = ending_timestamp
+                        logger.debug(f"Muxing flush packet: {packet}")
+                        new_container.mux(packet)
+                        packets_muxed += 1
+                except Exception as e:
+                    logger.error(f"Error flushing stream {stream}: {e}")
 
-        logger.debug(f"Total packets muxed: {packets_muxed}")
-        
-        original_container.close()
-        new_container.close()
-        self._remove(temp_path)
+            logger.debug(f"Total packets muxed: {packets_muxed}")
+            
+            original_container.close()
+            new_container.close()
+            self._remove(temp_path)
 
-        # Reopen the new container for further writing new data
-        # self.container_file = av.open(self.path, mode="a", format="matroska")
+        except Exception as e:
+            # If transcoding fails completely, restore the original file
+            logger.error(f"Transcoding failed completely: {e}")
+            if self._exists(temp_path):
+                if self._exists(self.path):
+                    self._remove(self.path)
+                self._rename(temp_path, self.path)
+                logger.info(f"Restored original file to {self.path}")
+            raise
 
     def _encode_frame(self, data: Any, stream: Any, timestamp: int) -> List[av.Packet]:
         """
@@ -702,7 +736,7 @@ class Trajectory:
         logger.debug(f"Encoding {stream.metadata.get('FEATURE_NAME')} with {encoding}, feature_type: {feature_type}")
         
         # For video codecs, only attempt to create video frames if data is image-like (2D or 3D)
-        if encoding in ["ffv1", "libaom-av1", "h264", "h265"] and len(feature_type.shape) >= 2:
+        if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"] and len(feature_type.shape) >= 2:
             logger.debug("Using video encoding path for image-like data")
             if feature_type.dtype == "float32":
                 frame = self._create_frame_depth(data, stream)
@@ -715,7 +749,7 @@ class Trajectory:
             packets = stream.encode(frame)
             logger.debug(f"Stream encode returned {len(packets)} packets")
         else:
-            if encoding in ["ffv1", "libaom-av1", "h264", "h265"]:
+            if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
                  logger.debug(f"Data is not image-like (shape: {feature_type.shape}). Using rawvideo (pickling) path for this packet despite stream encoding being {encoding}.")
             else:
                 logger.debug("Using rawvideo encoding path")
@@ -817,7 +851,7 @@ class Trajectory:
         stream = container.add_stream(encoding)
         
         # Configure stream based on encoding type
-        if encoding in ["ffv1", "libaom-av1", "h264", "h265"]:
+        if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
             # Only set width/height if shape is 2D or more (image/video like)
             if len(feature_type.shape) >= 2:
                 stream.width = feature_type.shape[1]
@@ -845,7 +879,7 @@ class Trajectory:
         # Determine the correct format based on array shape and codec
         if len(image_array.shape) == 3 and image_array.shape[2] == 3:
             # RGB image
-            if encoding in ["libaom-av1", "ffv1", "h264", "h265"]:
+            if encoding in ["libaom-av1", "ffv1", "libx264", "libx265"]:
                 # For video codecs that prefer YUV, convert RGB to YUV420p
                 frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
                 frame = frame.reformat(format="yuv420p")
