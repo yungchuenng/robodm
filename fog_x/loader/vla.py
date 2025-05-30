@@ -103,7 +103,6 @@ class NonShuffleVLALoader:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                print(self.index)
                 file_path = self.files[self.index]
                 self.index += 1
                 return self._read_vla(file_path, return_type=self.return_type)

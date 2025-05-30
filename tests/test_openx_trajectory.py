@@ -1840,7 +1840,7 @@ class TestOpenXLoaderBenchmark:
     def test_openx_loader_scalability(self, temp_dir):
         """Test loader scalability with different dataset sizes."""
         sizes = [1, 3, 5]  # Number of trajectories
-        steps_per_traj = 10
+        steps_per_traj = 100
         
         print(f"\n=== LOADER SCALABILITY TEST ===")
         
