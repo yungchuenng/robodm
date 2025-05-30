@@ -331,6 +331,7 @@ class TestRLDSLoaderIntegration:
         """Test loading real Open X-Embodiment data and compare original vs reconstructed."""
         data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0"
         dataset_name = "fractal20220817_data"  # Define dataset_name for file naming
+        data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
         
         try:
             # Load real OpenX data using the correct RLDSLoader API
@@ -399,7 +400,7 @@ class TestRLDSLoaderIntegration:
             Trajectory.from_list_of_dicts(
                 first_traj_data,
                 path=path,
-                video_codec="rawvideo"  # Use lossless for exact validation
+                video_codec="libx264"  # Use lossless for exact validation
             )
             
             # Verify file was created and can be read back
@@ -442,18 +443,62 @@ class TestRLDSLoaderIntegration:
             missing_fields = original_keys - reconstructed_keys
             extra_fields = reconstructed_keys - original_keys
             
-            # Try to match fields that might have different naming conventions
+            # Improved field mapping logic
             field_mappings = {}
-            for orig_key in original_keys:
-                for recon_key in reconstructed_keys:
-                    # Check if they might be the same field with different naming
-                    orig_parts = orig_key.lower().split('/')
-                    if any(part in recon_key.lower() for part in orig_parts):
+            unmatched_original = set(original_keys)
+            unmatched_reconstructed = set(reconstructed_keys)
+            
+            # First pass: exact matches
+            for orig_key in list(unmatched_original):
+                if orig_key in unmatched_reconstructed:
+                    field_mappings[orig_key] = orig_key
+                    unmatched_original.remove(orig_key)
+                    unmatched_reconstructed.remove(orig_key)
+            
+            # Second pass: matches with flattened structure (handle nested dicts)
+            for orig_key in list(unmatched_original):
+                for recon_key in list(unmatched_reconstructed):
+                    # Check if the original nested key matches the flattened reconstructed key
+                    if orig_key == recon_key:
                         field_mappings[orig_key] = recon_key
+                        unmatched_original.remove(orig_key)
+                        unmatched_reconstructed.remove(recon_key)
                         break
-                    elif orig_key.lower() in recon_key.lower() or recon_key.lower() in orig_key.lower():
+                    # Check if they are the same field with different nesting
+                    orig_parts = orig_key.split('/')
+                    recon_parts = recon_key.split('/')
+                    if len(orig_parts) == len(recon_parts):
+                        if all(op == rp for op, rp in zip(orig_parts, recon_parts)):
+                            field_mappings[orig_key] = recon_key
+                            unmatched_original.remove(orig_key)
+                            unmatched_reconstructed.remove(recon_key)
+                            break
+            
+            # Third pass: semantic matching (only for clear cases)
+            for orig_key in list(unmatched_original):
+                for recon_key in list(unmatched_reconstructed):
+                    # Only match if the key names are very similar
+                    orig_clean = orig_key.replace('/', '_').lower()
+                    recon_clean = recon_key.replace('/', '_').lower()
+                    
+                    # Must have substantial overlap in key name
+                    if orig_clean == recon_clean:
                         field_mappings[orig_key] = recon_key
+                        unmatched_original.remove(orig_key)
+                        unmatched_reconstructed.remove(recon_key)
                         break
+                    elif len(orig_clean) > 5 and len(recon_clean) > 5:
+                        # Check if one contains the other and they're sufficiently long
+                        if orig_clean in recon_clean or recon_clean in orig_clean:
+                            # Additional check: ensure key components match
+                            orig_tokens = set(orig_clean.split('_'))
+                            recon_tokens = set(recon_clean.split('_'))
+                            overlap = len(orig_tokens & recon_tokens)
+                            if overlap >= min(len(orig_tokens), len(recon_tokens)) * 0.8:
+                                field_mappings[orig_key] = recon_key
+                                unmatched_original.remove(orig_key)
+                                unmatched_reconstructed.remove(recon_key)
+                                break
             
             print(f"Original fields: {len(original_keys)}")
             print(f"Reconstructed fields: {len(reconstructed_keys)}")
@@ -464,12 +509,22 @@ class TestRLDSLoaderIntegration:
             if extra_fields:
                 print(f"Extra fields in reconstruction: {extra_fields}")
             
+            if unmatched_original:
+                print(f"Unmatched original fields: {unmatched_original}")
+            
+            if unmatched_reconstructed:
+                print(f"Unmatched reconstructed fields: {unmatched_reconstructed}")
+            
             print(f"\nField mappings found: {len(field_mappings)}")
             for orig, recon in field_mappings.items():
                 print(f"  {orig} -> {recon}")
             
             # Compare values for mapped fields
             comparison_results = {}
+            critical_errors = []
+            shape_mismatches = []
+            value_mismatches = []
+            
             for orig_key, recon_key in field_mappings.items():
                 try:
                     orig_data = original_flat_data[orig_key]
@@ -483,6 +538,7 @@ class TestRLDSLoaderIntegration:
                                 'original_shape': orig_data.shape,
                                 'reconstructed_shape': recon_data.shape
                             }
+                            shape_mismatches.append(f"{orig_key}: {orig_data.shape} vs {recon_data.shape}")
                             continue
                     
                     # Check data types
@@ -496,9 +552,12 @@ class TestRLDSLoaderIntegration:
                         if np.allclose(orig_data, recon_data, rtol=1e-6, atol=1e-8):
                             comparison_results[orig_key] = {'status': 'exact_match'}
                         elif np.allclose(orig_data, recon_data, rtol=1e-3, atol=1e-5):
-                            comparison_results[orig_key] = {'status': 'close_match', 'max_diff': np.max(np.abs(orig_data - recon_data))}
+                            max_diff = np.max(np.abs(orig_data - recon_data))
+                            comparison_results[orig_key] = {'status': 'close_match', 'max_diff': max_diff}
                         else:
-                            comparison_results[orig_key] = {'status': 'value_mismatch', 'max_diff': np.max(np.abs(orig_data - recon_data))}
+                            max_diff = np.max(np.abs(orig_data - recon_data))
+                            comparison_results[orig_key] = {'status': 'value_mismatch', 'max_diff': max_diff}
+                            value_mismatches.append(f"{orig_key}: max_diff={max_diff}")
                     else:
                         # Integer/other comparison
                         if np.array_equal(orig_data, recon_data):
@@ -507,11 +566,14 @@ class TestRLDSLoaderIntegration:
                             if hasattr(orig_data, 'dtype') and np.issubdtype(orig_data.dtype, np.integer):
                                 max_diff = np.max(np.abs(orig_data.astype(np.int64) - recon_data.astype(np.int64)))
                                 comparison_results[orig_key] = {'status': 'value_mismatch', 'max_diff': max_diff}
+                                value_mismatches.append(f"{orig_key}: max_diff={max_diff}")
                             else:
                                 comparison_results[orig_key] = {'status': 'value_mismatch'}
+                                value_mismatches.append(f"{orig_key}: non-numeric comparison failed")
                 
                 except Exception as e:
                     comparison_results[orig_key] = {'status': 'comparison_error', 'error': str(e)}
+                    critical_errors.append(f"{orig_key}: {str(e)}")
             
             # Print comparison results
             print(f"\n=== DETAILED COMPARISON RESULTS ===")
@@ -532,16 +594,49 @@ class TestRLDSLoaderIntegration:
             exact_matches = sum(1 for r in comparison_results.values() if r['status'] == 'exact_match')
             close_matches = sum(1 for r in comparison_results.values() if r['status'] == 'close_match')
             mismatches = sum(1 for r in comparison_results.values() if r['status'] in ['value_mismatch', 'shape_mismatch'])
+            errors = sum(1 for r in comparison_results.values() if r['status'] == 'comparison_error')
+            
+            total_compared = len(comparison_results)
+            success_rate = (exact_matches + close_matches) / total_compared * 100 if total_compared > 0 else 0
             
             print(f"\n=== SUMMARY ===")
-            print(f"Total compared fields: {len(comparison_results)}")
+            print(f"Total compared fields: {total_compared}")
             print(f"Exact matches: {exact_matches}")
             print(f"Close matches: {close_matches}")
             print(f"Mismatches: {mismatches}")
-            print(f"Success rate: {(exact_matches + close_matches) / len(comparison_results) * 100:.1f}%")
+            print(f"Comparison errors: {errors}")
+            print(f"Success rate: {success_rate:.1f}%")
             
-            # The test should pass if we can successfully load and convert the data
-            # Even if there are some differences due to compression or data type conversion
+            # Pytest assertions for data integrity
+            assert total_compared > 0, "No fields could be compared between original and reconstructed data"
+            
+            # Check for critical image and action fields
+            has_image_match = any('image' in key for key in field_mappings.keys())
+            has_action_match = any('action' in key for key in field_mappings.keys())
+            
+            assert has_image_match, "No image fields were successfully mapped and compared"
+            assert has_action_match, "No action fields were successfully mapped and compared"
+            
+            # Check minimum success rate
+            min_success_rate = 70.0  # Require at least 70% of fields to match closely
+            assert success_rate >= min_success_rate, \
+                f"Data integrity check failed: only {success_rate:.1f}% of fields matched (minimum required: {min_success_rate}%)"
+            
+            # Check for excessive shape mismatches
+            max_shape_mismatches = len(field_mappings) // 3  # Allow up to 1/3 to have shape mismatches
+            assert len(shape_mismatches) <= max_shape_mismatches, \
+                f"Too many shape mismatches ({len(shape_mismatches)}): {shape_mismatches[:5]}..."
+            
+            # Check for critical errors
+            assert len(critical_errors) == 0, f"Critical comparison errors occurred: {critical_errors}"
+            
+            # Check field mapping coverage
+            mapping_coverage = len(field_mappings) / len(original_keys) * 100
+            min_coverage = 100.0  # Require at least 80% of original fields to be mapped
+            assert mapping_coverage >= min_coverage, \
+                f"Poor field mapping coverage: only {mapping_coverage:.1f}% of original fields mapped (minimum: {min_coverage}%)"
+            
+            print(f"✓ All data integrity checks passed!")
             print(f"Successfully loaded and converted real {dataset_name} data")
             
         except Exception as e:
