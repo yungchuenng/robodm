@@ -377,8 +377,8 @@ class TestOpenXTrajectoryIntegration:
         print("=" * 60)
 
         # Ensure at least one codec works with OpenX data
-        assert (len(available_codecs) >
-                0), "No codecs are available for Open X-Embodiment data!"
+        assert (len(available_codecs)
+                > 0), "No codecs are available for Open X-Embodiment data!"
 
 
 class TestRLDSLoaderIntegration:
@@ -1462,8 +1462,8 @@ class TestOpenXFormatComparison:
                 "loading_time":
                 vla_load_metrics["loading_time"],
                 "compression_ratio":
-                original_size_mb / vla_save_metrics["file_size_mb"]
-                if vla_save_metrics["file_size_mb"] > 0 else 0,
+                (original_size_mb / vla_save_metrics["file_size_mb"]
+                 if vla_save_metrics["file_size_mb"] > 0 else 0),
                 "success":
                 True,
                 "data":
@@ -1502,8 +1502,8 @@ class TestOpenXFormatComparison:
                 "loading_time":
                 hdf5_load_metrics["loading_time"],
                 "compression_ratio":
-                original_size_mb / hdf5_save_metrics["file_size_mb"]
-                if hdf5_save_metrics["file_size_mb"] > 0 else 0,
+                (original_size_mb / hdf5_save_metrics["file_size_mb"]
+                 if hdf5_save_metrics["file_size_mb"] > 0 else 0),
                 "success":
                 True,
                 "data":
@@ -1543,8 +1543,8 @@ class TestOpenXFormatComparison:
                 "loading_time":
                 tfrecord_load_metrics["loading_time"],
                 "compression_ratio":
-                original_size_mb / tfrecord_save_metrics["file_size_mb"]
-                if tfrecord_save_metrics["file_size_mb"] > 0 else 0,
+                (original_size_mb / tfrecord_save_metrics["file_size_mb"]
+                 if tfrecord_save_metrics["file_size_mb"] > 0 else 0),
                 "success":
                 True,
                 "data":
@@ -1582,17 +1582,22 @@ class TestOpenXFormatComparison:
         if len(successful_formats) == 0:
             pytest.fail("No formats succeeded")
 
-        # Print comparison table
+        # Print comparison table with proper codec information
         print(
-            f"{'Format':<12} {'Size(MB)':<10} {'Save(s)':<10} {'Load(s)':<10} {'Comp.Ratio':<12} {'Total(s)':<10}"
+            f"{'Format (Codec)':<18} {'Size(MB)':<10} {'Save(s)':<10} {'Load(s)':<10} {'Comp.Ratio':<12} {'Total(s)':<10}"
         )
-        print("-" * 70)
+        print("-" * 80)
 
         for format_name, metrics in successful_formats.items():
-            codec_info = f" ({metrics.get('codec', '')})" if "codec" in metrics else ""
+            # Format display name with codec
+            if "codec" in metrics:
+                display_name = f"{format_name} ({metrics['codec']})"
+            else:
+                display_name = format_name
+
             total_time = metrics["creation_time"] + metrics["loading_time"]
             print(
-                f"{format_name + codec_info:<12} {metrics['file_size_mb']:<10.2f} {metrics['creation_time']:<10.3f} {metrics['loading_time']:<10.3f} {metrics['compression_ratio']:<12.2f} {total_time:<10.3f}"
+                f"{display_name:<18} {metrics['file_size_mb']:<10.2f} {metrics['creation_time']:<10.3f} {metrics['loading_time']:<10.3f} {metrics['compression_ratio']:<12.2f} {total_time:<10.3f}"
             )
 
         # Performance winners
@@ -1602,22 +1607,31 @@ class TestOpenXFormatComparison:
             # Best compression
             best_compression = max(successful_formats.items(),
                                    key=lambda x: x[1]["compression_ratio"])
+            best_compression_name = (
+                f"{best_compression[0]} ({best_compression[1].get('codec', 'N/A')})"
+                if "codec" in best_compression[1] else best_compression[0])
             print(
-                f"🏆 Best compression: {best_compression[0]} ({best_compression[1]['compression_ratio']:.2f}x)"
+                f"🏆 Best compression: {best_compression_name} ({best_compression[1]['compression_ratio']:.2f}x)"
             )
 
             # Fastest save
             fastest_save = min(successful_formats.items(),
                                key=lambda x: x[1]["creation_time"])
+            fastest_save_name = (
+                f"{fastest_save[0]} ({fastest_save[1].get('codec', 'N/A')})"
+                if "codec" in fastest_save[1] else fastest_save[0])
             print(
-                f"🚀 Fastest save: {fastest_save[0]} ({fastest_save[1]['creation_time']:.3f}s)"
+                f"🚀 Fastest save: {fastest_save_name} ({fastest_save[1]['creation_time']:.3f}s)"
             )
 
             # Fastest load
             fastest_load = min(successful_formats.items(),
                                key=lambda x: x[1]["loading_time"])
+            fastest_load_name = (
+                f"{fastest_load[0]} ({fastest_load[1].get('codec', 'N/A')})"
+                if "codec" in fastest_load[1] else fastest_load[0])
             print(
-                f"⚡ Fastest load: {fastest_load[0]} ({fastest_load[1]['loading_time']:.3f}s)"
+                f"⚡ Fastest load: {fastest_load_name} ({fastest_load[1]['loading_time']:.3f}s)"
             )
 
             # Best overall (lowest total time)
@@ -1625,10 +1639,14 @@ class TestOpenXFormatComparison:
                 successful_formats.items(),
                 key=lambda x: x[1]["creation_time"] + x[1]["loading_time"],
             )
+            best_overall_name = (
+                f"{best_overall[0]} ({best_overall[1].get('codec', 'N/A')})"
+                if "codec" in best_overall[1] else best_overall[0])
             total_time = (best_overall[1]["creation_time"] +
                           best_overall[1]["loading_time"])
             print(
-                f"🎯 Best overall: {best_overall[0]} ({total_time:.3f}s total)")
+                f"🎯 Best overall: {best_overall_name} ({total_time:.3f}s total)"
+            )
 
         # Basic data integrity check
         print(f"\n=== DATA INTEGRITY CHECK ===")
@@ -1684,8 +1702,8 @@ class TestOpenXFormatComparison:
 
         # Ensure file sizes are reasonable (not empty, not too large)
         for format_name, metrics in successful_formats.items():
-            assert (metrics["file_size_mb"] >
-                    0), f"{format_name} file should not be empty"
+            assert (metrics["file_size_mb"]
+                    > 0), f"{format_name} file should not be empty"
             assert (metrics["file_size_mb"] < original_size_mb *
                     10), f"{format_name} file suspiciously large"
 
@@ -1693,6 +1711,216 @@ class TestOpenXFormatComparison:
         print(
             f"Tested {len(successful_formats)} formats with {len(openx_test_data)} trajectory steps"
         )
+
+    def test_openx_format_comparison_comprehensive(self, temp_dir,
+                                                   openx_test_data):
+        """Comprehensive comparison of all formats and codecs for OpenX trajectory data."""
+        print(f"\n=== COMPREHENSIVE OPENX FORMAT COMPARISON ===")
+        print(f"Test data: {len(openx_test_data)} steps")
+
+        # Calculate original data size
+        original_size_mb = self._calculate_data_size(openx_test_data)
+        print(f"Original data size: {original_size_mb:.2f} MB")
+
+        # Test all codecs for VLA
+        vla_codecs = ["rawvideo", "ffv1", "libx264"]
+        all_results = {}
+
+        # Test VLA with different codecs
+        for codec in vla_codecs:
+            print(f"\n--- VLA FORMAT ({codec}) ---")
+            vla_path = os.path.join(temp_dir, f"test_{codec}.vla")
+
+            try:
+                vla_save_metrics = self._save_as_vla(openx_test_data, vla_path,
+                                                     codec)
+                vla_load_metrics = self._load_vla(vla_path)
+
+                all_results[f"VLA ({codec})"] = {
+                    "format":
+                    "VLA",
+                    "codec":
+                    codec,
+                    "creation_time":
+                    vla_save_metrics["creation_time"],
+                    "file_size_mb":
+                    vla_save_metrics["file_size_mb"],
+                    "loading_time":
+                    vla_load_metrics["loading_time"],
+                    "compression_ratio":
+                    (original_size_mb / vla_save_metrics["file_size_mb"]
+                     if vla_save_metrics["file_size_mb"] > 0 else 0),
+                    "success":
+                    True,
+                    "data":
+                    vla_load_metrics["data"],
+                }
+
+                print(
+                    f"✓ VLA ({codec}): create={vla_save_metrics['creation_time']:.3f}s, "
+                    f"load={vla_load_metrics['loading_time']:.3f}s, "
+                    f"size={vla_save_metrics['file_size_mb']:.2f} MB")
+
+            except Exception as e:
+                if "not available" in str(e).lower() or "codec" in str(
+                        e).lower():
+                    print(f"⚠ VLA ({codec}): Codec not available")
+                    continue
+                else:
+                    all_results[f"VLA ({codec})"] = {
+                        "success": False,
+                        "error": str(e)
+                    }
+                    print(f"✗ VLA ({codec}): Failed - {e}")
+
+        # Test HDF5 format
+        print(f"\n--- HDF5 FORMAT ---")
+        hdf5_path = os.path.join(temp_dir, "test.h5")
+        try:
+            hdf5_save_metrics = self._save_as_hdf5(openx_test_data, hdf5_path)
+            hdf5_load_metrics = self._load_hdf5(hdf5_path)
+
+            all_results["HDF5"] = {
+                "format":
+                "HDF5",
+                "creation_time":
+                hdf5_save_metrics["creation_time"],
+                "file_size_mb":
+                hdf5_save_metrics["file_size_mb"],
+                "loading_time":
+                hdf5_load_metrics["loading_time"],
+                "compression_ratio":
+                (original_size_mb / hdf5_save_metrics["file_size_mb"]
+                 if hdf5_save_metrics["file_size_mb"] > 0 else 0),
+                "success":
+                True,
+                "data":
+                hdf5_load_metrics["data"],
+            }
+
+            print(f"✓ HDF5: create={hdf5_save_metrics['creation_time']:.3f}s, "
+                  f"load={hdf5_load_metrics['loading_time']:.3f}s, "
+                  f"size={hdf5_save_metrics['file_size_mb']:.2f} MB")
+
+        except Exception as e:
+            all_results["HDF5"] = {"success": False, "error": str(e)}
+            print(f"✗ HDF5: Failed - {e}")
+
+        # Test TFRecord format
+        print(f"\n--- TFRECORD FORMAT ---")
+        tfrecord_path = os.path.join(temp_dir, "test.tfrecord")
+        try:
+            tfrecord_save_metrics = self._save_as_tfrecord(
+                openx_test_data, tfrecord_path)
+            tfrecord_load_metrics = self._load_tfrecord(
+                tfrecord_path, openx_test_data)
+
+            all_results["TFRecord"] = {
+                "format":
+                "TFRecord",
+                "creation_time":
+                tfrecord_save_metrics["creation_time"],
+                "file_size_mb":
+                tfrecord_save_metrics["file_size_mb"],
+                "loading_time":
+                tfrecord_load_metrics["loading_time"],
+                "compression_ratio":
+                (original_size_mb / tfrecord_save_metrics["file_size_mb"]
+                 if tfrecord_save_metrics["file_size_mb"] > 0 else 0),
+                "success":
+                True,
+                "data":
+                tfrecord_load_metrics["data"],
+            }
+
+            print(
+                f"✓ TFRecord: create={tfrecord_save_metrics['creation_time']:.3f}s, "
+                f"load={tfrecord_load_metrics['loading_time']:.3f}s, "
+                f"size={tfrecord_save_metrics['file_size_mb']:.2f} MB")
+
+        except Exception as e:
+            if "TensorFlow" in str(e):
+                print(f"⚠ TFRecord: Skipped (TensorFlow not available)")
+            else:
+                all_results["TFRecord"] = {"success": False, "error": str(e)}
+                print(f"✗ TFRecord: Failed - {e}")
+
+        # Filter successful results
+        successful_formats = {
+            k: v
+            for k, v in all_results.items() if v.get("success", False)
+        }
+
+        if len(successful_formats) == 0:
+            pytest.fail("No formats succeeded")
+
+        # Comprehensive comparison table
+        print(f"\n=== COMPREHENSIVE PERFORMANCE COMPARISON ===")
+        print(
+            f"{'Format (Codec)':<18} {'Size(MB)':<10} {'Load(s)':<10} {'Comp.Ratio':<12} {'Throughput':<12}"
+        )
+        print("-" * 74)
+
+        for format_name, metrics in successful_formats.items():
+            throughput = (1.0 / metrics["loading_time"]
+                          if metrics["loading_time"] > 0 else 0)
+            print(
+                f"{format_name:<18} {metrics['file_size_mb']:<10.2f} "
+                f"{metrics['loading_time']:<10.3f} {metrics['compression_ratio']:<12.2f} {throughput:<12.2f}"
+            )
+
+        # Detailed analysis by category
+        print(f"\n=== DETAILED PERFORMANCE ANALYSIS ===")
+
+        # Best in each category
+        if len(successful_formats) > 1:
+            best_compression = max(successful_formats.items(),
+                                   key=lambda x: x[1]["compression_ratio"])
+            smallest_size = min(successful_formats.items(),
+                                key=lambda x: x[1]["file_size_mb"])
+            fastest_load = min(successful_formats.items(),
+                               key=lambda x: x[1]["loading_time"])
+            best_throughput = max(
+                successful_formats.items(),
+                key=lambda x: (1.0 / x[1]["loading_time"]
+                               if x[1]["loading_time"] > 0 else 0),
+            )
+
+            print(
+                f"🏆 Best compression ratio: {best_compression[0]} ({best_compression[1]['compression_ratio']:.2f}x)"
+            )
+            print(
+                f"🗜️ Smallest file size: {smallest_size[0]} ({smallest_size[1]['file_size_mb']:.2f} MB)"
+            )
+            print(
+                f"⚡ Fastest loading: {fastest_load[0]} ({fastest_load[1]['loading_time']:.3f}s)"
+            )
+            print(
+                f"📈 Best throughput: {best_throughput[0]} ({1.0 / best_throughput[1]['loading_time']:.2f} samples/s)"
+            )
+
+        # Codec-specific analysis for VLA
+        vla_results = {
+            k: v
+            for k, v in successful_formats.items() if k.startswith("VLA")
+        }
+        if len(vla_results) > 1:
+            print(f"\n=== VLA CODEC COMPARISON ===")
+            print(
+                f"{'Codec':<12} {'Size(MB)':<10} {'Comp.Ratio':<12} {'Load(s)':<10} {'Throughput':<12}"
+            )
+            print("-" * 68)
+
+            for format_name, metrics in vla_results.items():
+                codec = format_name.split("(")[1].rstrip(")")
+                throughput = (1.0 / metrics["loading_time"]
+                              if metrics["loading_time"] > 0 else 0)
+                print(
+                    f"{codec:<12} {metrics['file_size_mb']:<10.2f} {metrics['compression_ratio']:<12.2f} "
+                    f"{metrics['loading_time']:<10.3f} {throughput:<12.2f}")
+
+        # Test passed successfully
+        assert len(successful_formats) > 0, "At least one format should work"
 
 
 class TestOpenXLoaderBenchmark:
@@ -1977,7 +2205,7 @@ class TestOpenXLoaderBenchmark:
             "batch_size":
             batch_size,
             "throughput_traj_per_sec":
-            len(trajectories) / loading_time if loading_time > 0 else 0,
+            (len(trajectories) / loading_time if loading_time > 0 else 0),
             "data_sample":
             trajectories[0] if trajectories else None,
         }
@@ -2018,7 +2246,7 @@ class TestOpenXLoaderBenchmark:
             "batch_size":
             batch_size,
             "throughput_traj_per_sec":
-            total_trajectories / loading_time if loading_time > 0 else 0,
+            (total_trajectories / loading_time if loading_time > 0 else 0),
             "data_sample":
             batches[0][0] if batches and batches[0] else None,
         }
@@ -2053,7 +2281,7 @@ class TestOpenXLoaderBenchmark:
             "batch_size":
             batch_size,
             "throughput_traj_per_sec":
-            trajectory_count / loading_time if loading_time > 0 else 0,
+            (trajectory_count / loading_time if loading_time > 0 else 0),
             "data_sample":
             None,  # Would need more complex parsing
         }
@@ -2178,19 +2406,29 @@ class TestOpenXLoaderBenchmark:
 
         # Combined metrics table
         print(
-            f"{'Format':<12} {'Creation(s)':<12} {'Size(MB)':<10} {'Loading(s)':<10} {'Comp.Ratio':<12} {'Total(s)':<10}"
+            f"{'Format (Codec)':<18} {'Creation(s)':<12} {'Size(MB)':<10} {'Loading(s)':<12} {'Load Speed':<12} {'Total(s)':<10}"
         )
-        print("-" * 85)
+        print("-" * 88)
 
         for format_name in dataset_infos.keys():
             if format_name in loader_results:
-                codec_info = (
-                    f" ({dataset_infos[format_name].get('codec', '')})"
-                    if "codec" in dataset_infos[format_name] else "")
+                # Format display name with codec
+                if "codec" in dataset_infos[format_name]:
+                    display_name = (
+                        f"{format_name} ({dataset_infos[format_name]['codec']})"
+                    )
+                else:
+                    display_name = format_name
+
                 total_time = (dataset_infos[format_name]["creation_time"] +
                               loader_results[format_name]["loading_time"])
+
+                # Calculate load speed in traj/s
+                load_speed = loader_results[format_name][
+                    "throughput_traj_per_sec"]
+
                 print(
-                    f"{format_name + codec_info:<12} {dataset_infos[format_name]['creation_time']:<12.3f} {dataset_infos[format_name]['total_size_mb']:.2f} {loader_results[format_name]['loading_time']:<10.3f} {loader_results[format_name]['throughput_traj_per_sec']:.2f} {total_time:<10.3f}"
+                    f"{display_name:<18} {dataset_infos[format_name]['creation_time']:<12.3f} {dataset_infos[format_name]['total_size_mb']:<10.2f} {loader_results[format_name]['loading_time']:<12.3f} {load_speed:<12.2f} {total_time:<10.3f}"
                 )
 
         # Performance winners
@@ -2200,22 +2438,33 @@ class TestOpenXLoaderBenchmark:
             # Fastest creation
             fastest_creation = min(dataset_infos.items(),
                                    key=lambda x: x[1]["creation_time"])
+            fastest_creation_name = (
+                f"{fastest_creation[0]} ({fastest_creation[1].get('codec', 'N/A')})"
+                if "codec" in fastest_creation[1] else fastest_creation[0])
             print(
-                f"🚀 Fastest creation: {fastest_creation[0]} ({fastest_creation[1]['creation_time']:.3f}s)"
+                f"🚀 Fastest creation: {fastest_creation_name} ({fastest_creation[1]['creation_time']:.3f}s)"
             )
 
-            # Best compression
+            # Best compression (smallest file size)
             best_compression = min(dataset_infos.items(),
                                    key=lambda x: x[1]["total_size_mb"])
+            best_compression_name = (
+                f"{best_compression[0]} ({best_compression[1].get('codec', 'N/A')})"
+                if "codec" in best_compression[1] else best_compression[0])
             print(
-                f"🗜️ Best compression: {best_compression[0]} ({best_compression[1]['total_size_mb']:.2f} MB)"
+                f"🗜️ Best compression: {best_compression_name} ({best_compression[1]['total_size_mb']:.2f} MB)"
             )
 
             # Fastest loading
             fastest_loading = min(loader_results.items(),
                                   key=lambda x: x[1]["loading_time"])
+            fastest_loading_name = (
+                f"{fastest_loading[0]} ({dataset_infos[fastest_loading[0]].get('codec', 'N/A')})"
+                if fastest_loading[0] in dataset_infos
+                and "codec" in dataset_infos[fastest_loading[0]] else
+                fastest_loading[0])
             print(
-                f"⚡ Fastest loading: {fastest_loading[0]} ({fastest_loading[1]['loading_time']:.3f}s)"
+                f"⚡ Fastest loading: {fastest_loading_name} ({fastest_loading[1]['loading_time']:.3f}s)"
             )
 
             # Best overall (lowest total time)
@@ -2227,8 +2476,12 @@ class TestOpenXLoaderBenchmark:
                 ) for name in loader_results.keys()),
                 key=lambda x: x[1],
             )
+            best_overall_name = (
+                f"{best_overall[0]} ({dataset_infos[best_overall[0]].get('codec', 'N/A')})"
+                if "codec" in dataset_infos[best_overall[0]] else
+                best_overall[0])
             print(
-                f"🎯 Best overall: {best_overall[0]} ({best_overall[1]:.3f}s total)"
+                f"🎯 Best overall: {best_overall_name} ({best_overall[1]:.3f}s total)"
             )
 
         # Data integrity check
@@ -2270,7 +2523,7 @@ class TestOpenXLoaderBenchmark:
 
     def test_openx_loader_scalability(self, temp_dir):
         """Test loader scalability with different dataset sizes."""
-        sizes = [1, 3, 5]  # Number of trajectories
+        sizes = [100, 300, 500]  # Number of trajectories
         steps_per_traj = 100
 
         print(f"\n=== LOADER SCALABILITY TEST ===")
@@ -2507,8 +2760,8 @@ class TestOpenXLoaderBenchmark:
                                             f"  💾 {fmt2} is {1/size_ratio:.2f}x more compact than {fmt1}"
                                         )
 
-        assert (len(scalability_results) >
-                0), "At least one scalability test should succeed"
+        assert (len(scalability_results)
+                > 0), "At least one scalability test should succeed"
 
         # Test scalability characteristics
         for format_name in formats:
@@ -2697,3 +2950,397 @@ class TestOpenXLoaderBenchmark:
             print(f"RLDS benchmark failed: {e}")
             # Don't fail the test, just report the issue
             assert True  # Pass the test even if RLDS fails
+
+    def test_openx_loader_benchmark_all_codecs(self, temp_dir,
+                                               openx_dataset_sample):
+        """Comprehensive benchmark comparing all loaders and codecs."""
+        print(f"\n=== COMPREHENSIVE OPENX LOADER BENCHMARK ===")
+        print(f"Dataset: {len(openx_dataset_sample)} trajectories")
+
+        # Calculate original data size
+        total_steps = sum(len(traj) for traj in openx_dataset_sample)
+        print(f"Total steps: {total_steps}")
+
+        # Test all VLA codecs
+        vla_codecs = ["rawvideo", "ffv1", "libx264"]
+        all_dataset_infos = {}
+        all_loader_results = {}
+
+        # Phase 1: Create datasets in all formats and codecs
+        print(f"\n--- DATASET CREATION PHASE ---")
+
+        # Test VLA with different codecs
+        for codec in vla_codecs:
+            try:
+                vla_info = self._create_vla_datasets(openx_dataset_sample,
+                                                     temp_dir, codec)
+                if vla_info["num_files"] > 0:
+                    format_name = f"VLA ({codec})"
+                    all_dataset_infos[format_name] = vla_info
+                    print(
+                        f"✓ {format_name}: {vla_info['num_files']} files, {vla_info['total_size_mb']:.2f} MB, {vla_info['creation_time']:.3f}s"
+                    )
+                else:
+                    print(f"✗ VLA ({codec}): No files created")
+            except Exception as e:
+                if "not available" in str(e).lower() or "codec" in str(
+                        e).lower():
+                    print(f"⚠ VLA ({codec}): Codec not available")
+                else:
+                    print(f"✗ VLA ({codec}): Failed - {e}")
+
+        # Test HDF5
+        try:
+            hdf5_info = self._create_hdf5_datasets(openx_dataset_sample,
+                                                   temp_dir)
+            if hdf5_info["num_files"] > 0:
+                all_dataset_infos["HDF5"] = hdf5_info
+                print(
+                    f"✓ HDF5: {hdf5_info['num_files']} files, {hdf5_info['total_size_mb']:.2f} MB, {hdf5_info['creation_time']:.3f}s"
+                )
+            else:
+                print(f"✗ HDF5: No files created")
+        except Exception as e:
+            print(f"✗ HDF5: Failed - {e}")
+
+        # Test TFRecord
+        try:
+            tfrecord_info = self._create_tfrecord_datasets(
+                openx_dataset_sample, temp_dir)
+            if tfrecord_info and tfrecord_info["num_files"] > 0:
+                all_dataset_infos["TFRecord"] = tfrecord_info
+                print(
+                    f"✓ TFRecord: {tfrecord_info['num_files']} files, {tfrecord_info['total_size_mb']:.2f} MB, {tfrecord_info['creation_time']:.3f}s"
+                )
+            else:
+                print(
+                    f"⚠ TFRecord: Skipped (TensorFlow not available or creation failed)"
+                )
+        except Exception as e:
+            print(f"⚠ TFRecord: Skipped - {e}")
+
+        if not all_dataset_infos:
+            pytest.fail("No datasets were created successfully")
+
+        # Phase 2: Benchmark all loaders
+        print(f"\n--- LOADER BENCHMARK PHASE ---")
+
+        for format_name, dataset_info in all_dataset_infos.items():
+            try:
+                if format_name.startswith("VLA"):
+                    loader_result = self._benchmark_vla_loader(dataset_info,
+                                                               batch_size=1)
+                elif format_name == "HDF5":
+                    loader_result = self._benchmark_hdf5_loader(dataset_info,
+                                                                batch_size=1)
+                elif format_name == "TFRecord":
+                    loader_result = self._benchmark_tfrecord_loader(
+                        dataset_info, batch_size=1)
+                else:
+                    continue
+
+                if loader_result:
+                    all_loader_results[format_name] = loader_result
+                    print(
+                        f"✓ {format_name} Loader: {loader_result['loading_time']:.3f}s, {loader_result['throughput_traj_per_sec']:.2f} traj/s"
+                    )
+            except Exception as e:
+                print(f"✗ {format_name} Loader: Failed - {e}")
+
+        if not all_loader_results:
+            pytest.fail("No loaders succeeded")
+
+        # Phase 3: Comprehensive analysis
+        print(f"\n=== COMPREHENSIVE PERFORMANCE ANALYSIS ===")
+        print(
+            f"{'Format (Codec)':<18} {'Size(MB)':<10} {'Loading(s)':<12} {'Load Speed':<12}"
+        )
+        print("-" * 64)
+
+        for format_name in all_dataset_infos.keys():
+            if format_name in all_loader_results:
+                load_speed = all_loader_results[format_name][
+                    "throughput_traj_per_sec"]
+
+                print(
+                    f"{format_name:<18} "
+                    f"{all_dataset_infos[format_name]['total_size_mb']:<10.2f} "
+                    f"{all_loader_results[format_name]['loading_time']:<12.3f} "
+                    f"{load_speed:<12.2f}")
+
+        # Performance winners
+        if len(all_loader_results) > 1:
+            print(f"\n=== PERFORMANCE WINNERS ===")
+
+            best_compression = min(all_dataset_infos.items(),
+                                   key=lambda x: x[1]["total_size_mb"])
+            print(
+                f"🗜️ Best compression: {best_compression[0]} ({best_compression[1]['total_size_mb']:.2f} MB)"
+            )
+
+            fastest_loading = min(all_loader_results.items(),
+                                  key=lambda x: x[1]["loading_time"])
+            print(
+                f"⚡ Fastest loading: {fastest_loading[0]} ({fastest_loading[1]['loading_time']:.3f}s)"
+            )
+
+            best_throughput = max(
+                all_loader_results.items(),
+                key=lambda x: x[1]["throughput_traj_per_sec"],
+            )
+            print(
+                f"📈 Best throughput: {best_throughput[0]} ({best_throughput[1]['throughput_traj_per_sec']:.2f} traj/s)"
+            )
+
+        # VLA codec-specific analysis
+        vla_results = {
+            k: v
+            for k, v in all_loader_results.items() if k.startswith("VLA")
+        }
+        if len(vla_results) > 1:
+            print(f"\n=== VLA CODEC COMPARISON ===")
+            print(
+                f"{'Codec':<12} {'Size(MB)':<10} {'Loading(s)':<12} {'Throughput':<12}"
+            )
+            print("-" * 58)
+
+            for format_name in vla_results.keys():
+                codec = format_name.split("(")[1].rstrip(")")
+                dataset_info = all_dataset_infos[format_name]
+                loader_info = all_loader_results[format_name]
+
+                print(f"{codec:<12} {dataset_info['total_size_mb']:<10.2f} "
+                      f"{loader_info['loading_time']:<12.3f} "
+                      f"{loader_info['throughput_traj_per_sec']:<12.2f}")
+
+        # Test passed successfully
+        assert len(all_loader_results) > 0, "At least one loader should work"
+
+    def test_openx_scalability_comprehensive(self, temp_dir):
+        """Comprehensive scalability test across all formats and codecs."""
+        print(f"\n=== COMPREHENSIVE SCALABILITY TEST ===")
+
+        # Test with different dataset sizes
+        test_sizes = [1, 3, 5]
+        results_by_size = {}
+
+        for size in test_sizes:
+            print(f"\n--- Testing with {size} trajectories ---")
+
+            # Create synthetic trajectories for this size
+            trajectories = self._create_synthetic_trajectories(size)
+            results_by_size[size] = {}
+
+            # Test all VLA codecs
+            for codec in ["rawvideo", "ffv1", "libx264"]:
+                try:
+                    # Create VLA dataset
+                    vla_info = self._create_vla_datasets(
+                        trajectories, temp_dir, codec)
+                    if vla_info["num_files"] > 0:
+                        # Benchmark VLA loader
+                        loader_result = self._benchmark_vla_loader(
+                            vla_info, batch_size=1)
+                        if loader_result:
+                            results_by_size[size][f"VLA ({codec})"] = {
+                                "loading_time":
+                                loader_result["loading_time"],
+                                "file_size_mb":
+                                vla_info["total_size_mb"],
+                                "throughput":
+                                loader_result["throughput_traj_per_sec"],
+                            }
+                            print(
+                                f"VLA ({codec}): load={loader_result['loading_time']:.3f}s, {loader_result['throughput_traj_per_sec']:.2f} traj/s"
+                            )
+                except Exception as e:
+                    if "not available" in str(e).lower() or "codec" in str(
+                            e).lower():
+                        continue
+                    else:
+                        print(f"VLA ({codec}): Failed - {e}")
+
+            # Test HDF5
+            try:
+                hdf5_info = self._create_hdf5_datasets(trajectories, temp_dir)
+                if hdf5_info["num_files"] > 0:
+                    loader_result = self._benchmark_hdf5_loader(hdf5_info,
+                                                                batch_size=1)
+                    if loader_result:
+                        results_by_size[size]["HDF5"] = {
+                            "loading_time": loader_result["loading_time"],
+                            "file_size_mb": hdf5_info["total_size_mb"],
+                            "throughput":
+                            loader_result["throughput_traj_per_sec"],
+                        }
+                        print(
+                            f"HDF5: load={loader_result['loading_time']:.3f}s, {loader_result['throughput_traj_per_sec']:.2f} traj/s"
+                        )
+            except Exception as e:
+                print(f"HDF5: Failed - {e}")
+
+            # Test TFRecord
+            try:
+                tfrecord_info = self._create_tfrecord_datasets(
+                    trajectories, temp_dir)
+                if tfrecord_info and tfrecord_info["num_files"] > 0:
+                    loader_result = self._benchmark_tfrecord_loader(
+                        tfrecord_info, batch_size=1)
+                    if loader_result:
+                        results_by_size[size]["TFRecord"] = {
+                            "loading_time": loader_result["loading_time"],
+                            "file_size_mb": tfrecord_info["total_size_mb"],
+                            "throughput":
+                            loader_result["throughput_traj_per_sec"],
+                        }
+                        print(
+                            f"TFRecord: load={loader_result['loading_time']:.3f}s, {loader_result['throughput_traj_per_sec']:.2f} traj/s"
+                        )
+            except Exception as e:
+                continue
+
+        # Analysis
+        print(f"\n=== DETAILED SCALABILITY ANALYSIS ===")
+
+        # Get all unique formats tested
+        all_formats = set()
+        for size_results in results_by_size.values():
+            all_formats.update(size_results.keys())
+
+        # Print scalability table for each format
+        for format_name in sorted(all_formats):
+            print(f"\n--- {format_name.upper()} SCALABILITY ---")
+            print(
+                f"{'Size':<6} {'Load(s)':<10} {'Size(MB)':<10} {'Throughput':<10}"
+            )
+            print("-" * 48)
+
+            for size in test_sizes:
+                if format_name in results_by_size[size]:
+                    result = results_by_size[size][format_name]
+                    print(
+                        f"{size:<6} {result['loading_time']:<10.3f} "
+                        f"{result['file_size_mb']:<10.2f} {result['throughput']:<10.2f}"
+                    )
+
+        # Scaling efficiency analysis
+        print(f"\n=== SCALING EFFICIENCY ANALYSIS ===")
+
+        for format_name in sorted(all_formats):
+            # Check if we have data for all sizes
+            size_data = {}
+            for size in test_sizes:
+                if format_name in results_by_size[size]:
+                    size_data[size] = results_by_size[size][format_name]
+
+            if len(size_data) >= 2:
+                print(f"\n{format_name} scaling:")
+                base_size = min(size_data.keys())
+                base_result = size_data[base_size]
+                print(
+                    f"  Base ({base_size} traj): {base_result['loading_time']:.3f}s loading"
+                )
+
+                for size in sorted(size_data.keys()):
+                    if size != base_size:
+                        result = size_data[size]
+                        data_ratio = size / base_size
+                        time_ratio = (result["loading_time"] /
+                                      base_result["loading_time"])
+                        efficiency = data_ratio / time_ratio if time_ratio > 0 else 0
+
+                        size_ratio = (result["file_size_mb"] /
+                                      base_result["file_size_mb"] if
+                                      base_result["file_size_mb"] > 0 else 0)
+
+                        print(
+                            f"  {size} traj ({data_ratio:.1f}x data): {result['loading_time']:.3f}s ({time_ratio:.2f}x time), efficiency: {efficiency:.2f}"
+                        )
+                        print(
+                            f"    Loading: {time_ratio:.2f}x, Size: {size_ratio:.2f}x"
+                        )
+
+        # Head-to-head comparison at each size
+        print(f"\n=== HEAD-TO-HEAD COMPARISON ===")
+
+        for size in test_sizes:
+            if results_by_size[size]:
+                print(f"\nSize {size} trajectories:")
+
+                # Find winners in each category
+                fastest_loading = min(results_by_size[size].items(),
+                                      key=lambda x: x[1]["loading_time"])
+                smallest_size = min(results_by_size[size].items(),
+                                    key=lambda x: x[1]["file_size_mb"])
+                best_throughput = max(results_by_size[size].items(),
+                                      key=lambda x: x[1]["throughput"])
+
+                print(
+                    f"  ⚡ Fastest loading: {fastest_loading[0]} ({fastest_loading[1]['loading_time']:.3f}s)"
+                )
+                print(
+                    f"  🗜️ Smallest size: {smallest_size[0]} ({smallest_size[1]['file_size_mb']:.2f} MB)"
+                )
+                print(
+                    f"  📈 Best throughput: {best_throughput[0]} ({best_throughput[1]['throughput']:.2f} traj/s)"
+                )
+
+                # Calculate speed comparison between fastest and others
+                if len(results_by_size[size]) > 1:
+                    all_times = [
+                        (name, result["loading_time"])
+                        for name, result in results_by_size[size].items()
+                    ]
+                    fastest_time = min(all_times, key=lambda x: x[1])
+                    slowest_time = max(all_times, key=lambda x: x[1])
+                    if slowest_time[1] > 0:
+                        speedup = slowest_time[1] / fastest_time[1]
+                        print(
+                            f"  📊 {fastest_time[0]} is {speedup:.2f}x faster than {slowest_time[0]}"
+                        )
+
+        # Test passed successfully
+        assert len(
+            results_by_size) > 0, "Should have results for at least one size"
+
+    def _create_synthetic_trajectories(self, num_trajectories):
+        """Create synthetic trajectories for scalability testing."""
+        trajectories = []
+        steps_per_trajectory = 20
+
+        for traj_idx in range(num_trajectories):
+            trajectory_data = []
+            for step in range(steps_per_trajectory):
+                step_data = {
+                    "observation": {
+                        "image":
+                        np.random.randint(0,
+                                          255, (256, 256, 3),
+                                          dtype=np.uint8),
+                        "wrist_image":
+                        np.random.randint(0,
+                                          255, (128, 128, 3),
+                                          dtype=np.uint8),
+                        "state":
+                        np.random.uniform(-1, 1, 7).astype(np.float32),
+                        "gripper_state":
+                        np.random.uniform(0, 1, 1).astype(np.float32),
+                    },
+                    "action":
+                    np.random.uniform(-1, 1, 7).astype(np.float32),
+                    "reward":
+                    np.float32(1.0 if step == steps_per_trajectory -
+                               1 else 0.0),
+                    "is_terminal":
+                    step == steps_per_trajectory - 1,
+                    "step":
+                    step,
+                    "language_instruction":
+                    f"Trajectory {traj_idx}, Step {step}",
+                    "episode_id":
+                    traj_idx,
+                }
+                trajectory_data.append(step_data)
+            trajectories.append(trajectory_data)
+
+        return trajectories

@@ -187,7 +187,7 @@ class VLAIterableDataset(IterableDataset):
 
     def __next__(self):
         batch = self.vla_loader.get_batch()
-        if batch is None:
+        if not batch:
             raise StopIteration
         return batch[0]  # Return a single item, not a batch
 
