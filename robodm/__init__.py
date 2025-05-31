@@ -12,7 +12,7 @@ __root_dir__ = os.path.dirname(os.path.abspath(__file__))
 from robodm.feature import FeatureType
 from robodm.trajectory import Trajectory
 from robodm.trajectory_base import (FileSystemInterface, TimeProvider,
-                                   TrajectoryInterface)
+                                    TrajectoryInterface)
 from robodm.trajectory_factory import TrajectoryFactory, create_trajectory
 
 __all__ = [

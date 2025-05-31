@@ -37,9 +37,7 @@ class VLADataset:
         self.split = split
         self.format = format
         self.shuffle = shuffle
-        self.loader = NonShuffleVLALoader(path,
-                                          batch_size=1,
-                                          return_type="tensor")
+        self.loader = NonShuffleVLALoader(path, batch_size=1, return_type="tensor")
 
     def __iter__(self):
         return self

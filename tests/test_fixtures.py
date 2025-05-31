@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, Mock
 import numpy as np
 import pytest
 
-from robodm.trajectory_base import FileSystemInterface, TimeProvider
 from robodm import Trajectory
+from robodm.trajectory_base import FileSystemInterface, TimeProvider
 
 
 class MockFileSystem(FileSystemInterface):

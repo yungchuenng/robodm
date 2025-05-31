@@ -2,6 +2,7 @@ import os
 import tempfile
 
 import numpy as np
+
 import robodm
 
 if __name__ == "__main__":
@@ -12,7 +13,10 @@ if __name__ == "__main__":
 
     # Add some data
     for i in range(10):
-        traj.add("observation/image", np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
+        traj.add(
+            "observation/image",
+            np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8),
+        )
         traj.add("observation/state", np.random.rand(10).astype(np.float32))
         traj.add("action", np.random.rand(7).astype(np.float32))
 
