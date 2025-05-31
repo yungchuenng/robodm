@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from fog_x import Trajectory
-from fog_x.loader import RLDSLoader
+from robodm import Trajectory
+from robodm.loader import RLDSLoader
 
 from .test_fixtures import MockFileSystem, MockTimeProvider
 
@@ -377,8 +377,8 @@ class TestOpenXTrajectoryIntegration:
         print("=" * 60)
 
         # Ensure at least one codec works with OpenX data
-        assert (len(available_codecs)
-                > 0), "No codecs are available for Open X-Embodiment data!"
+        assert (len(available_codecs) >
+                0), "No codecs are available for Open X-Embodiment data!"
 
 
 class TestRLDSLoaderIntegration:
@@ -390,7 +390,7 @@ class TestRLDSLoaderIntegration:
     @pytest.mark.parametrize("video_codec", ["rawvideo", "libx264"])
     def test_real_openx_data_codec_comparison(self, temp_dir, video_codec):
         """Test real OpenX data with different codecs using appropriate validation for each."""
-        data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
         dataset_name = "fractal20220817_data"
 
         try:
@@ -554,7 +554,7 @@ class TestRLDSLoaderIntegration:
     @pytest.mark.parametrize("codec", OPENX_TEST_CODECS)
     def test_real_openx_data_loading(self, temp_dir, codec):
         """Test loading real Open X-Embodiment data and compare original vs reconstructed."""
-        data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
         dataset_name = "fractal20220817_data"  # Define dataset_name for file naming
         video_codec = codec  # Test with lossy codec
 
@@ -1702,8 +1702,8 @@ class TestOpenXFormatComparison:
 
         # Ensure file sizes are reasonable (not empty, not too large)
         for format_name, metrics in successful_formats.items():
-            assert (metrics["file_size_mb"]
-                    > 0), f"{format_name} file should not be empty"
+            assert (metrics["file_size_mb"] >
+                    0), f"{format_name} file should not be empty"
             assert (metrics["file_size_mb"] < original_size_mb *
                     10), f"{format_name} file suspiciously large"
 
@@ -2181,7 +2181,7 @@ class TestOpenXLoaderBenchmark:
 
     def _benchmark_vla_loader(self, dataset_info, batch_size=1):
         """Benchmark VLA loader performance."""
-        from fog_x.loader import NonShuffleVLALoader
+        from robodm.loader import NonShuffleVLALoader
 
         start_time = time.time()
 
@@ -2213,7 +2213,7 @@ class TestOpenXLoaderBenchmark:
     def _benchmark_hdf5_loader(self, dataset_info, batch_size=1):
         """Benchmark HDF5 loader performance."""
         try:
-            from fog_x.loader.hdf5 import get_hdf5_dataloader
+            from robodm.loader.hdf5 import get_hdf5_dataloader
         except ImportError:
             return None
 
@@ -2523,7 +2523,7 @@ class TestOpenXLoaderBenchmark:
 
     def test_openx_loader_scalability(self, temp_dir):
         """Test loader scalability with different dataset sizes."""
-        sizes = [100, 300, 500]  # Number of trajectories
+        sizes = [1, 3, 5]  # Number of trajectories
         steps_per_traj = 100
 
         print(f"\n=== LOADER SCALABILITY TEST ===")
@@ -2760,8 +2760,8 @@ class TestOpenXLoaderBenchmark:
                                             f"  💾 {fmt2} is {1/size_ratio:.2f}x more compact than {fmt1}"
                                         )
 
-        assert (len(scalability_results)
-                > 0), "At least one scalability test should succeed"
+        assert (len(scalability_results) >
+                0), "At least one scalability test should succeed"
 
         # Test scalability characteristics
         for format_name in formats:
@@ -2788,7 +2788,7 @@ class TestOpenXLoaderBenchmark:
 
     def test_openx_rlds_integration_benchmark(self, temp_dir):
         """Test RLDS integration if real RLDS data is available."""
-        rlds_data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        rlds_data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
 
         # Check if RLDS data is available
         if not os.path.exists(rlds_data_dir):

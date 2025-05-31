@@ -23,4 +23,4 @@ RUN pip3 install jupyter
 
 COPY . /
 
-CMD ["fog_x"]
+CMD ["robodm"]

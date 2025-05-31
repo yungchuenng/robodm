@@ -6,16 +6,11 @@ from . import BaseLoader
 
 
 class LeRobotLoader(BaseLoader):
-
-    def __init__(self,
-                 path,
-                 dataset_name,
-                 batch_size=1,
-                 delta_timestamps=None):
+    def __init__(self, path, dataset_name, batch_size=1, delta_timestamps=None):
         super(LeRobotLoader, self).__init__(path)
         self.batch_size = batch_size
         self.dataset = LeRobotDataset(
-            root="/mnt/data/fog_x/hf/",
+            root="/mnt/data/robodm/hf/",
             repo_id=dataset_name,
             delta_timestamps=delta_timestamps,
         )
@@ -43,9 +38,11 @@ class LeRobotLoader(BaseLoader):
                         self.episode_index = 0
                     try:
                         from_idx = self.dataset.episode_data_index["from"][
-                            self.episode_index].item()
+                            self.episode_index
+                        ].item()
                         to_idx = self.dataset.episode_data_index["to"][
-                            self.episode_index].item()
+                            self.episode_index
+                        ].item()
                     except Exception as e:
                         self.episode_index = 0
                         continue

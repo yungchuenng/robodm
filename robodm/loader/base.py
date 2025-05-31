@@ -2,7 +2,6 @@ from logging import getLogger
 
 
 class BaseLoader:
-
     def __init__(self, path):
         super(BaseLoader, self).__init__()
         self.logger = getLogger(__name__)

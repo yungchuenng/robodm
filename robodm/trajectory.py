@@ -13,9 +13,9 @@ import av
 import h5py
 import numpy as np
 
-from fog_x import FeatureType
-from fog_x.trajectory_base import TrajectoryInterface
-from fog_x.utils import recursively_read_hdf5_group
+from robodm import FeatureType
+from robodm.trajectory_base import TrajectoryInterface
+from robodm.utils import recursively_read_hdf5_group
 
 logger = logging.getLogger(__name__)
 
@@ -199,16 +199,16 @@ class Trajectory(TrajectoryInterface):
 
         self.feature_name_to_stream: Dict[str,
                                           Any] = {}  # feature_name: stream
-        self.feature_name_to_feature_type: Dict[str, FeatureType] = (
-            {})  # feature_name: feature_type
+        self.feature_name_to_feature_type: Dict[str, FeatureType] = {
+        }  # feature_name: feature_type
         self.trajectory_data = None  # trajectory_data
         self.start_time = self._time()
         self.mode = mode
         self.stream_id_to_info: Dict[int,
                                      StreamInfo] = {}  # stream_id: StreamInfo
         self.is_closed = False
-        self.pending_write_tasks: List[Any] = (
-            [])  # List to keep track of pending write tasks
+        self.pending_write_tasks: List[Any] = [
+        ]  # List to keep track of pending write tasks
         self.container_file: Optional[Any] = None  # av.OutputContainer or None
 
         # check if the path exists
@@ -524,7 +524,7 @@ class Trajectory(TrajectoryInterface):
             {"feature1": "value3", "feature2": "value4"},
         ]
 
-        trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/fog_x/output.vla")
+        trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/robodm/output.vla")
         """
         traj = cls(path,
                    mode="w",
@@ -565,7 +565,7 @@ class Trajectory(TrajectoryInterface):
             "feature2": ["value2", "value4"],
         }
 
-        trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/fog_x/output.vla")
+        trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/robodm/output.vla")
         """
         traj = cls(
             path,
@@ -761,8 +761,8 @@ class Trajectory(TrajectoryInterface):
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
 
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container)
+                d_original_stream_id_to_new_container_stream[
+                    stream.index] = stream_in_updated_container
 
             # Transcode pickled images and add them to the new container
             packets_muxed = 0
@@ -950,8 +950,8 @@ class Trajectory(TrajectoryInterface):
                 # new_stream.options = stream.options
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container)
+                d_original_stream_id_to_new_container_stream[
+                    stream.index] = stream_in_updated_container
 
             # Add new feature stream
             new_stream = self._add_stream_to_container(new_container,

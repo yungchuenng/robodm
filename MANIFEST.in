@@ -1,5 +1,6 @@
+include README.md
 include LICENSE
 include HISTORY.md
-include Containerfile
-graft tests
-graft fog_x
+graft robodm
+global-exclude *.pyc
+global-exclude __pycache__

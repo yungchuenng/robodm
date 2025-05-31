@@ -1,5 +1,16 @@
-site_name: fog_x
-theme: readthedocs
+site_name: robodm
+site_description: An Efficient and Scalable Data Collection and Management Framework For Robotics Learning
+site_url: https://github.com/BerkeleyAutomation/robodm/
+
+nav:
+  - Home: index.md
+  - API Reference: api.md
+
+theme:
+  name: material
+  palette:
+    primary: blue
+    accent: orange
 
 plugins:
 - search
