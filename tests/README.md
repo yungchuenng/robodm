@@ -1,6 +1,6 @@
-# fog_x Test Suite
+# robodm Test Suite
 
-This directory contains comprehensive tests for the fog_x trajectory management system, including unit tests, integration tests, and performance benchmarks.
+This directory contains comprehensive tests for the robodm trajectory management system, including unit tests, integration tests, and performance benchmarks.
 
 ## Test Structure
 
@@ -90,7 +90,7 @@ python -m pytest tests/
 
 ## Benchmarking
 
-The benchmark suite compares fog_x VLA format against:
+The benchmark suite compares robodm VLA format against:
 - **HDF5**: Popular scientific data format
 - **TFRecord**: TensorFlow's native format (if available)
 
@@ -127,7 +127,7 @@ export PYTEST_IGNORE_SLOW=1
 export PYTEST_TEMP_DIR=/path/to/temp
 
 # Enable verbose logging
-export FOG_X_TEST_VERBOSE=1
+export ROBODM_TEST_VERBOSE=1
 ```
 
 ## Adding New Tests
@@ -191,7 +191,7 @@ pip install tensorflow  # For TFRecord benchmarks
 #### "Permission denied" errors
 ```bash
 # Ensure temp directory is writable
-chmod 755 /tmp/fog_x_tests
+chmod 755 /tmp/robodm_tests
 ```
 
 #### Out of memory errors

@@ -147,12 +147,12 @@ jobs:
           
       - name: Run fast tests
         run: |
-          pytest tests/ -v -m "not slow and not benchmark" --cov=fog_x --cov-report=xml --cov-report=term-missing
+          pytest tests/ -v -m "not slow and not benchmark" --cov=robodm --cov-report=xml --cov-report=term-missing
           
       - name: Run slow tests (Ubuntu only)
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
         run: |
-          pytest tests/ -v -m "slow" --cov=fog_x --cov-append --cov-report=xml
+          pytest tests/ -v -m "slow" --cov=robodm --cov-append --cov-report=xml
           
       - name: Upload coverage to Codecov
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'

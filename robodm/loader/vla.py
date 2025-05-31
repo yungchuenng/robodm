@@ -4,8 +4,10 @@ import os
 import random
 from typing import Any, List, Optional, Text
 
-import fog_x
-from fog_x.loader.base import BaseLoader
+import numpy as np
+
+import robodm
+from robodm.loader.base import BaseLoader
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +47,7 @@ class VLALoader:
     def _read_vla(self, data_path, return_type=None):
         if return_type is None:
             return_type = self.return_type
-        traj = fog_x.Trajectory(data_path)
+        traj = robodm.Trajectory(data_path)
         ret = traj.load(return_type=return_type)
         return ret
 
@@ -159,7 +161,7 @@ class NonShuffleVLALoader:
     def _read_vla(self, data_path, return_type=None):
         if return_type is None:
             return_type = self.return_type
-        traj = fog_x.Trajectory(data_path)
+        traj = robodm.Trajectory(data_path)
         ret = traj.load(return_type=return_type)
         return ret
 
@@ -172,7 +174,7 @@ from typing import Optional, Text
 import torch
 from torch.utils.data import DataLoader, IterableDataset
 
-from fog_x.loader.vla import VLALoader
+from robodm.loader.vla import VLALoader
 
 
 class VLAIterableDataset(IterableDataset):

@@ -15,7 +15,7 @@ class LeRobotLoader(BaseLoader):
         super(LeRobotLoader, self).__init__(path)
         self.batch_size = batch_size
         self.dataset = LeRobotDataset(
-            root="/mnt/data/fog_x/hf/",
+            root="/mnt/data/robodm/hf/",
             repo_id=dataset_name,
             delta_timestamps=delta_timestamps,
         )

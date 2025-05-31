@@ -3,10 +3,10 @@
 **An Efficient and Scalable Data Collection and Management Framework For Robotics Learning**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/github/license/BerkeleyAutomation/fog_x)](LICENSE)
-[![Tests](https://github.com/BerkeleyAutomation/fog_x/workflows/Tests/badge.svg)](https://github.com/BerkeleyAutomation/fog_x/actions)
+[![License](https://img.shields.io/github/license/BerkeleyAutomation/robodm)](LICENSE)
+[![Tests](https://github.com/BerkeleyAutomation/robodm/workflows/Tests/badge.svg)](https://github.com/BerkeleyAutomation/robodm/actions)
 
-fog_x is a high-performance robotics data management framework that enables efficient collection, storage, and retrieval of multimodal robotics trajectories. Built with speed 🚀 and memory efficiency 📈 in mind, fog_x provides native support for various robotics data formats and cloud storage systems.
+robodm is a high-performance robotics data management framework that enables efficient collection, storage, and retrieval of multimodal robotics trajectories. Built with speed 🚀 and memory efficiency 📈 in mind, robodm provides native support for various robotics data formats and cloud storage systems.
 
 ## ✨ Key Features
 
@@ -22,8 +22,8 @@ fog_x is a high-performance robotics data management framework that enables effi
 ### Basic Installation
 
 ```bash
-git clone https://github.com/BerkeleyAutomation/fog_x.git
-cd fog_x
+git clone https://github.com/BerkeleyAutomation/robodm.git
+cd robodm
 pip install -e .
 ```
 
@@ -52,10 +52,10 @@ pip install -e .[all]
 
 ```python
 import numpy as np
-import fog_x
+import robodm
 
 # Create a new trajectory for data collection
-trajectory = fog_x.Trajectory(path="/tmp/robot_demo.vla", mode="w")
+trajectory = robodm.Trajectory(path="/tmp/robot_demo.vla", mode="w")
 
 # Collect multimodal robotics data
 for step in range(100):
@@ -75,7 +75,7 @@ for step in range(100):
 trajectory.close()
 
 # Load the trajectory for training
-trajectory = fog_x.Trajectory(path="/tmp/robot_demo.vla", mode="r")
+trajectory = robodm.Trajectory(path="/tmp/robot_demo.vla", mode="r")
 data = trajectory.load()
 
 print(f"Loaded trajectory with {len(data['camera/rgb'])} timesteps")
@@ -86,7 +86,7 @@ print(f"Joint positions shape: {data['robot/joint_positions'][0].shape}")
 ### Batch Data Creation
 
 ```python
-import fog_x
+import robodm
 
 # Create trajectory from dictionary of lists
 data = {
@@ -95,7 +95,7 @@ data = {
     "action": [np.random.rand(7) for _ in range(50)],
 }
 
-trajectory = fog_x.Trajectory.from_dict_of_lists(
+trajectory = robodm.Trajectory.from_dict_of_lists(
     data=data,
     path="/tmp/batch_trajectory.vla",
     video_codec="libaom-av1"  # Use AV1 codec for efficient compression
@@ -105,10 +105,10 @@ trajectory = fog_x.Trajectory.from_dict_of_lists(
 ### Advanced Configuration
 
 ```python
-import fog_x
+import robodm
 
 # Configure video compression settings
-trajectory = fog_x.Trajectory(
+trajectory = robodm.Trajectory(
     path="/tmp/compressed_demo.vla",
     mode="w",
     video_codec="libx265",  # Use H.265 codec
@@ -127,7 +127,7 @@ trajectory.add("control/arm/joint_positions", joint_positions)
 
 ## 🎥 Video Codec Support
 
-fog_x supports multiple video codecs for efficient storage of visual data:
+robodm supports multiple video codecs for efficient storage of visual data:
 
 | Codec | Use Case | Compression | Quality |
 |-------|----------|-------------|---------|
@@ -140,10 +140,10 @@ fog_x supports multiple video codecs for efficient storage of visual data:
 
 ```python
 # Automatic codec selection based on data characteristics
-trajectory = fog_x.Trajectory(path="auto.vla", mode="w", video_codec="auto")
+trajectory = robodm.Trajectory(path="auto.vla", mode="w", video_codec="auto")
 
 # Manual codec selection for specific needs
-trajectory = fog_x.Trajectory(path="lossless.vla", mode="w", video_codec="ffv1")
+trajectory = robodm.Trajectory(path="lossless.vla", mode="w", video_codec="ffv1")
 ```
 
 ## 🧪 Development & Testing
@@ -186,7 +186,7 @@ This project is licensed under the BSD 3-Clause License. See [LICENSE](LICENSE) 
 
 ## 📚 Citation
 
-If you use fog_x in your research, please cite:
+If you use robodm in your research, please cite:
 
 ```bibtex
 @article{chen2025robo,

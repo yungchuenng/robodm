@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# YAPF formatter, adapted for fog_x project.
+# YAPF formatter, adapted for robodm project.
 #
 # Usage:
 #    # Do work and commit your work.
@@ -101,14 +101,14 @@ fi
 YAPF_EXCLUDES=(
     '--exclude' 'build/**'
     '--exclude' '.pytest_cache/**'
-    '--exclude' 'fog_x.egg-info/**'
+    '--exclude' 'robodm.egg-info/**'
     '--exclude' '__pycache__/**'
 )
 
 ISORT_EXCLUDES=(
     '--sg' 'build/**'
     '--sg' '.pytest_cache/**'
-    '--sg' 'fog_x.egg-info/**'
+    '--sg' 'robodm.egg-info/**'
     '--sg' '__pycache__/**'
 )
 
@@ -159,28 +159,28 @@ format_changed() {
 format_all() {
     if [ "$CHECK_ONLY" = true ]; then
         echo "Checking YAPF formatting..."
-        if ! yapf "${YAPF_FLAGS[@]}" "${YAPF_EXCLUDES[@]}" fog_x tests examples | grep -q .; then
+        if ! yapf "${YAPF_FLAGS[@]}" "${YAPF_EXCLUDES[@]}" robodm tests examples | grep -q .; then
             echo "✓ YAPF: No formatting issues"
         else
             echo "✗ YAPF: Formatting issues found"
             FORMAT_ISSUES=true
         fi
     else
-        yapf "${YAPF_FLAGS[@]}" "${YAPF_EXCLUDES[@]}" fog_x tests examples
+        yapf "${YAPF_FLAGS[@]}" "${YAPF_EXCLUDES[@]}" robodm tests examples
     fi
 }
 
-echo 'fog_x Black formatting:'
+echo 'robodm Black formatting:'
 if [ "$CHECK_ONLY" = true ]; then
     echo "Checking Black formatting..."
-    if black "${BLACK_FLAGS[@]}" fog_x tests examples; then
+    if black "${BLACK_FLAGS[@]}" robodm tests examples; then
         echo "✓ Black: No formatting issues"
     else
         echo "✗ Black: Formatting issues found"
         FORMAT_ISSUES=true
     fi
 else
-    black "${BLACK_FLAGS[@]}" fog_x tests examples
+    black "${BLACK_FLAGS[@]}" robodm tests examples
 fi
 
 ## This flag formats individual files. --files *must* be the first command line
@@ -195,26 +195,26 @@ else
    # Format only the files that changed in last commit.
    format_changed
 fi
-echo 'fog_x yapf: Done'
+echo 'robodm yapf: Done'
 
-echo 'fog_x isort:'
+echo 'robodm isort:'
 if [ "$CHECK_ONLY" = true ]; then
     echo "Checking isort formatting..."
-    if isort "${ISORT_FLAGS[@]}" fog_x tests examples "${ISORT_EXCLUDES[@]}"; then
+    if isort "${ISORT_FLAGS[@]}" robodm tests examples "${ISORT_EXCLUDES[@]}"; then
         echo "✓ isort: No formatting issues"
     else
         echo "✗ isort: Formatting issues found"
         FORMAT_ISSUES=true
     fi
 else
-    isort "${ISORT_FLAGS[@]}" fog_x tests examples "${ISORT_EXCLUDES[@]}"
+    isort "${ISORT_FLAGS[@]}" robodm tests examples "${ISORT_EXCLUDES[@]}"
 fi
 
 # Run mypy
-echo 'fog_x mypy:'
+echo 'robodm mypy:'
 # Check if there are any Python files to check
-if find fog_x -name "*.py" | head -1 | grep -q .; then
-    if mypy fog_x --ignore-missing-imports --check-untyped-defs; then
+if find robodm -name "*.py" | head -1 | grep -q .; then
+    if mypy robodm --ignore-missing-imports --check-untyped-defs; then
         echo "✓ MyPy: No type issues"
     else
         echo "✗ MyPy: Type issues found"
@@ -223,13 +223,13 @@ if find fog_x -name "*.py" | head -1 | grep -q .; then
         fi
     fi
 else
-    echo "No Python files found in fog_x/"
+    echo "No Python files found in robodm/"
 fi
 
 # Run Pylint
-echo 'fog_x Pylint:'
+echo 'robodm Pylint:'
 if [[ "$1" == '--files' ]]; then
-    # If --files is passed, filter to files within fog_x/ and pass to pylint.
+    # If --files is passed, filter to files within robodm/ and pass to pylint.
     if pylint "${PYLINT_FLAGS[@]}" "${@:2}"; then
         echo "✓ Pylint: No issues"
     else
@@ -239,9 +239,9 @@ if [[ "$1" == '--files' ]]; then
         fi
     fi
 elif [[ "$RUN_ALL" == true ]]; then
-    # Pylint entire fog_x directory.
-    if find fog_x -name "*.py" | head -1 | grep -q .; then
-        if pylint "${PYLINT_FLAGS[@]}" fog_x; then
+    # Pylint entire robodm directory.
+    if find robodm -name "*.py" | head -1 | grep -q .; then
+        if pylint "${PYLINT_FLAGS[@]}" robodm; then
             echo "✓ Pylint: No issues"
         else
             echo "✗ Pylint: Issues found"
@@ -250,12 +250,12 @@ elif [[ "$RUN_ALL" == true ]]; then
             fi
         fi
     else
-        echo "No Python files found in fog_x/"
+        echo "No Python files found in robodm/"
     fi
 else
-    # Pylint only files in fog_x/ that have changed in last commit.
+    # Pylint only files in robodm/ that have changed in last commit.
     MERGEBASE="$(git merge-base origin/main HEAD 2>/dev/null || git merge-base origin/master HEAD 2>/dev/null || echo HEAD~1)"
-    changed_files=$(git diff --name-only --diff-filter=ACM "$MERGEBASE" -- 'fog_x/*.py' 'fog_x/**/*.py')
+    changed_files=$(git diff --name-only --diff-filter=ACM "$MERGEBASE" -- 'robodm/*.py' 'robodm/**/*.py')
     if [[ -n "$changed_files" ]]; then
         if echo "$changed_files" | tr '\n' '\0' | xargs -0 pylint "${PYLINT_FLAGS[@]}"; then
             echo "✓ Pylint: No issues"
@@ -266,7 +266,7 @@ else
             fi
         fi
     else
-        echo 'Pylint skipped: no files changed in fog_x/.'
+        echo 'Pylint skipped: no files changed in robodm/.'
     fi
 fi
 
@@ -292,4 +292,4 @@ if ! git diff --quiet &>/dev/null; then
     exit 1
 fi
 
-echo 'fog_x formatting complete!'
+echo 'robodm formatting complete!'

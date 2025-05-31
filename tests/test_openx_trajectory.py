@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from fog_x import Trajectory
-from fog_x.loader import RLDSLoader
+from robodm import Trajectory
+from robodm.loader import RLDSLoader
 
 from .test_fixtures import MockFileSystem, MockTimeProvider
 
@@ -1555,11 +1555,9 @@ class TestOpenXFormatComparison:
                 f"✓ TFRecord creation time: {tfrecord_save_metrics['creation_time']:.3f}s"
             )
             print(
-                f"✓ TFRecord file size: {tfrecord_save_metrics['file_size_mb']:.2f} MB"
-            )
+                f"✓ TFRecord file size: {tfrecord_save_metrics['file_size_mb']:.2f} MB")
             print(
-                f"✓ TFRecord loading time: {tfrecord_load_metrics['loading_time']:.3f}s"
-            )
+                f"✓ TFRecord loading time: {tfrecord_load_metrics['loading_time']:.3f}s")
             print(
                 f"✓ TFRecord compression ratio: {results['TFRecord']['compression_ratio']:.2f}x"
             )
@@ -2181,7 +2179,7 @@ class TestOpenXLoaderBenchmark:
 
     def _benchmark_vla_loader(self, dataset_info, batch_size=1):
         """Benchmark VLA loader performance."""
-        from fog_x.loader import NonShuffleVLALoader
+        from robodm.loader import NonShuffleVLALoader
 
         start_time = time.time()
 
@@ -2213,7 +2211,7 @@ class TestOpenXLoaderBenchmark:
     def _benchmark_hdf5_loader(self, dataset_info, batch_size=1):
         """Benchmark HDF5 loader performance."""
         try:
-            from fog_x.loader.hdf5 import get_hdf5_dataloader
+            from robodm.loader.hdf5 import get_hdf5_dataloader
         except ImportError:
             return None
 

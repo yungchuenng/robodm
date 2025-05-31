@@ -41,4 +41,4 @@ jobs:
           
       - name: Run mypy
         run: |
-          mypy fog_x --ignore-missing-imports --check-untyped-defs --show-error-codes --pretty
+          mypy robodm --ignore-missing-imports --check-untyped-defs --show-error-codes --pretty

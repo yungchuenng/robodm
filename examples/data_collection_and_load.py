@@ -1,31 +1,34 @@
-import time
+import os
+import tempfile
 
 import numpy as np
+import robodm
 
-import fog_x
+if __name__ == "__main__":
+    path = os.path.join(tempfile.gettempdir(), "test_trajectory.vla")
 
-path = "/tmp/output.vla"
+    # Create a trajectory
+    traj = robodm.Trajectory(path=path, mode="w")
 
-# 🦊 Data collection:
-# create a new trajectory
-traj = fog_x.Trajectory(path=path, mode="w")
+    # Add some data
+    for i in range(10):
+        traj.add("observation/image", np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8))
+        traj.add("observation/state", np.random.rand(10).astype(np.float32))
+        traj.add("action", np.random.rand(7).astype(np.float32))
 
-# collect step data for the episode
-for i in range(100):
-    time.sleep(0.001)
-    traj.add(feature="arm_view", data=np.ones((640, 480, 3), dtype=np.uint8))
-    traj.add(feature="gripper_pose", data=np.ones((4, 4), dtype=np.float32))
-    traj.add(feature="view", data=np.ones((640, 480, 3), dtype=np.uint8))
-    traj.add(feature="wrist_view", data=np.ones((640, 480, 3), dtype=np.uint8))
-    traj.add(feature="joint_angles", data=np.ones((7, ), dtype=np.float32))
-    traj.add(feature="joint_velocities", data=np.ones((7, ), dtype=np.float32))
-    traj.add(feature="joint_torques", data=np.ones((7, ), dtype=np.float32))
-    traj.add(feature="ee_force", data=np.ones((6, ), dtype=np.float32))
-    traj.add(feature="ee_velocity", data=np.ones((6, ), dtype=np.float32))
-    traj.add(feature="ee_pose", data=np.ones((4, 4), dtype=np.float32))
+    # Close the trajectory
+    traj.close()
 
-traj.close()
+    print(f"Trajectory saved to {path}")
 
-traj = fog_x.Trajectory(path=path, mode="r")
+    # Load the trajectory
+    traj = robodm.Trajectory(path=path, mode="r")
+    data = traj.load()
 
-print(traj.load())
+    print(f"Loaded trajectory with {len(data['observation/image'])} timesteps")
+    print(f"Image shape: {data['observation/image'][0].shape}")
+    print(f"State shape: {data['observation/state'][0].shape}")
+    print(f"Action shape: {data['action'][0].shape}")
+
+    # Clean up
+    os.remove(path)

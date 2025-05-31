@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from fog_x import Trajectory
-from fog_x.loader import HDF5Loader, NonShuffleVLALoader
+from robodm import Trajectory
+from robodm.loader import HDF5Loader, NonShuffleVLALoader
 
 from .test_fixtures import BenchmarkDataset
 
@@ -110,7 +110,7 @@ class TestNonShuffleVLALoader:
 
         try:
             # Test with batch size
-            from fog_x.loader.vla import get_vla_dataloader
+            from robodm.loader.vla import get_vla_dataloader
 
             dataloader = get_vla_dataloader(path=temp_dir, batch_size=2)
 
@@ -361,7 +361,7 @@ class TestHDF5Loader:
             paths.append(path)
 
         # Test loading
-        from fog_x.loader.hdf5 import get_hdf5_dataloader
+        from robodm.loader.hdf5 import get_hdf5_dataloader
 
         dataloader = get_hdf5_dataloader(path=os.path.join(temp_dir, "*.h5"),
                                          batch_size=1,
@@ -389,7 +389,7 @@ class TestHDF5Loader:
             benchmark_dataset.create_hdf5_dataset(path, small_data)
 
         # Test with batch size
-        from fog_x.loader.hdf5 import get_hdf5_dataloader
+        from robodm.loader.hdf5 import get_hdf5_dataloader
 
         dataloader = get_hdf5_dataloader(path=os.path.join(temp_dir, "*.h5"),
                                          batch_size=2,
@@ -434,7 +434,7 @@ class TestLoaderComparison:
         vla_loader = NonShuffleVLALoader(vla_path)
         vla_data = list(vla_loader)[0]
 
-        from fog_x.loader.hdf5 import get_hdf5_dataloader
+        from robodm.loader.hdf5 import get_hdf5_dataloader
 
         h5_loader = get_hdf5_dataloader(h5_path, batch_size=1, num_workers=0)
         h5_data = list(h5_loader)[0][0]
@@ -486,7 +486,7 @@ class TestLoaderError:
         """Test HDF5 loader with pattern that matches no files."""
         pattern = os.path.join(temp_dir, "nonexistent_*.h5")
 
-        from fog_x.loader.hdf5 import get_hdf5_dataloader
+        from robodm.loader.hdf5 import get_hdf5_dataloader
 
         dataloader = get_hdf5_dataloader(pattern, batch_size=1, num_workers=0)
 
@@ -535,7 +535,7 @@ class TestLoaderPerformance:
         benchmark_dataset.create_hdf5_dataset(path, large_sample_data)
 
         # Load and measure
-        from fog_x.loader.hdf5 import get_hdf5_dataloader
+        from robodm.loader.hdf5 import get_hdf5_dataloader
 
         dataloader = get_hdf5_dataloader(path, batch_size=1, num_workers=0)
         batches = list(dataloader)

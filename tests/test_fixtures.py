@@ -1,15 +1,17 @@
-"""Test fixtures and mock implementations for fog_x testing."""
+"""Test fixtures and mock implementations for robodm testing."""
 
 import os
 import shutil
 import tempfile
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List, Optional, Union
 from unittest.mock import MagicMock, Mock
 
 import numpy as np
 import pytest
 
-from fog_x.trajectory_base import FileSystemInterface, TimeProvider
+from robodm.trajectory_base import FileSystemInterface, TimeProvider
+from robodm import Trajectory
 
 
 class MockFileSystem(FileSystemInterface):
@@ -162,8 +164,6 @@ class BenchmarkDataset:
                            data: Dict[str, List[Any]],
                            video_codec: str = "auto"):
         """Create a VLA dataset file for testing."""
-        from fog_x import Trajectory
-
         traj = Trajectory.from_dict_of_lists(data,
                                              path,
                                              video_codec=video_codec)

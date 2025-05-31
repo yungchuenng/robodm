@@ -8,9 +8,9 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from fog_x import FeatureType, Trajectory, TrajectoryFactory
-from fog_x.trajectory import CodecConfig
-from fog_x.trajectory_base import FileSystemInterface, TimeProvider
+from robodm import FeatureType, Trajectory, TrajectoryFactory
+from robodm.trajectory import CodecConfig
+from robodm.trajectory_base import FileSystemInterface, TimeProvider
 
 from .test_fixtures import MockFileSystem, MockTimeProvider
 

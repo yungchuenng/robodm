@@ -3,8 +3,8 @@ from typing import Any, Dict, List, Optional, Text
 
 import numpy as np
 
-from fog_x.loader.vla import NonShuffleVLALoader, VLALoader
-from fog_x.utils import data_to_tf_schema
+from robodm.loader.vla import NonShuffleVLALoader, VLALoader
+from robodm.utils import data_to_tf_schema
 
 
 class VLADataset:

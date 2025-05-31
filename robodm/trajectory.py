@@ -13,9 +13,9 @@ import av
 import h5py
 import numpy as np
 
-from fog_x import FeatureType
-from fog_x.trajectory_base import TrajectoryInterface
-from fog_x.utils import recursively_read_hdf5_group
+from robodm import FeatureType
+from robodm.trajectory_base import TrajectoryInterface
+from robodm.utils import recursively_read_hdf5_group
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +524,7 @@ class Trajectory(TrajectoryInterface):
             {"feature1": "value3", "feature2": "value4"},
         ]
 
-        trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/fog_x/output.vla")
+        trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/robodm/output.vla")
         """
         traj = cls(path,
                    mode="w",
@@ -565,7 +565,7 @@ class Trajectory(TrajectoryInterface):
             "feature2": ["value2", "value4"],
         }
 
-        trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/fog_x/output.vla")
+        trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/robodm/output.vla")
         """
         traj = cls(
             path,
