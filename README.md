@@ -13,11 +13,9 @@ fog_x is a high-performance robotics data management framework that enables effi
 - **🚀 High Performance**: Optimized for speed with active metadata and lazily-loaded trajectory data
 - **📈 Memory Efficient**: Smart data loading and compression strategies minimize memory usage
 - **🎥 Advanced Video Compression**: Support for multiple codecs (H.264, H.265, AV1, FFV1) with automatic codec selection
-- **☁️ Cloud Native**: Built-in support for cloud storage systems (AWS S3, etc.)
 - **🔄 Format Compatibility**: Native support for Open-X-Embodiment, HuggingFace datasets, RLDS, and HDF5
 - **🎯 Flexible Data Types**: Handle images, videos, sensor data, and custom features seamlessly
 - **🏗️ Distributed Ready**: Flexible dataset partitioning for distributed training workflows
-- **🧪 Test Coverage**: Comprehensive test suite with benchmarking capabilities
 
 ## 🛠️ Installation
 
@@ -127,46 +125,6 @@ trajectory.add("sensors/camera/wrist/rgb", wrist_camera)
 trajectory.add("control/arm/joint_positions", joint_positions)
 ```
 
-## 📊 Data Loaders
-
-fog_x includes specialized loaders for common robotics datasets:
-
-### HDF5 Loader
-
-```python
-from fog_x.loader import HDF5Loader
-
-# Convert HDF5 datasets to fog_x format
-loader = HDF5Loader()
-loader.convert_to_trajectory(
-    input_path="/path/to/dataset.h5",
-    output_path="/path/to/output.vla"
-)
-```
-
-### RLDS (Reverb Dataset) Loader
-
-```python
-from fog_x.loader import RLDSLoader
-
-# Load from RLDS format
-loader = RLDSLoader()
-trajectory = loader.load_from_rlds(
-    dataset_path="/path/to/rlds_dataset",
-    output_path="/path/to/output.vla"
-)
-```
-
-### VLA (Video Language Action) Loader
-
-```python
-from fog_x.loader import VLALoader
-
-# Efficient VLA data loading
-loader = VLALoader()
-dataset = loader.load_dataset("/path/to/vla_files")
-```
-
 ## 🎥 Video Codec Support
 
 fog_x supports multiple video codecs for efficient storage of visual data:
@@ -188,77 +146,6 @@ trajectory = fog_x.Trajectory(path="auto.vla", mode="w", video_codec="auto")
 trajectory = fog_x.Trajectory(path="lossless.vla", mode="w", video_codec="ffv1")
 ```
 
-## ☁️ Cloud Storage Integration
-
-```python
-import fog_x
-
-# Direct S3 integration (requires aws optional dependencies)
-trajectory = fog_x.Trajectory(
-    path="s3://my-bucket/trajectories/demo.vla",
-    mode="w"
-)
-
-# Add data as usual
-trajectory.add("observation", image_data)
-trajectory.close()
-
-# Load from cloud storage
-trajectory = fog_x.Trajectory(
-    path="s3://my-bucket/trajectories/demo.vla",
-    mode="r"
-)
-data = trajectory.load()
-```
-
-## 🏭 Factory Pattern for Advanced Use Cases
-
-```python
-from fog_x import TrajectoryFactory
-
-# Create factory with custom dependencies
-factory = TrajectoryFactory(
-    filesystem=custom_filesystem,
-    time_provider=custom_timer
-)
-
-# Create trajectories with dependency injection
-trajectory = factory.create_trajectory(
-    path="/tmp/test.vla",
-    mode="w",
-    video_codec="libaom-av1"
-)
-```
-
-## 🔧 API Reference
-
-### Core Classes
-
-- **`Trajectory`**: Main class for data collection and loading
-- **`FeatureType`**: Type system for trajectory features
-- **`TrajectoryFactory`**: Factory for creating trajectory instances
-- **`CodecConfig`**: Video codec configuration management
-
-### Key Methods
-
-- **`add(feature, data, timestamp=None)`**: Add single feature to trajectory
-- **`add_by_dict(data, timestamp=None)`**: Add multiple features from dictionary
-- **`load(return_type="numpy")`**: Load trajectory data
-- **`close(compact=True)`**: Close and optionally compact trajectory
-- **`from_dict_of_lists(data, path, ...)`**: Create trajectory from structured data
-
-## 📈 Performance & Benchmarks
-
-Run benchmarks to test performance on your system:
-
-```bash
-# Run comprehensive benchmarks
-python -m pytest tests/test_trajectory.py::test_benchmark -v
-
-# Run specific codec benchmarks
-python tests/benchmark_codecs.py
-```
-
 ## 🧪 Development & Testing
 
 ### Running Tests
@@ -275,18 +162,6 @@ pytest tests/test_trajectory.py -v
 pytest tests/test_loaders.py -v
 ```
 
-### Code Quality
-
-```bash
-# Format code
-make fmt
-
-# Run linters
-make lint
-
-# Generate documentation
-make docs
-```
 
 ## 📝 Examples
 
