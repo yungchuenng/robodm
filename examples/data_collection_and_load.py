@@ -6,14 +6,9 @@ import fog_x
 
 path = "/tmp/output.vla"
 
-# remove the existing file
-# import os
-# os.system(f"rm -rf {path}")
-# os.system(f"rm -rf /tmp/*.cache")
-
 # 🦊 Data collection:
 # create a new trajectory
-traj = fog_x.Trajectory(path=path)
+traj = fog_x.Trajectory(path=path, mode="w")
 
 # collect step data for the episode
 for i in range(100):
@@ -31,4 +26,6 @@ for i in range(100):
 
 traj.close()
 
-traj = fog_x.Trajectory(path=path)
+traj = fog_x.Trajectory(path=path, mode="r")
+
+print(traj.load())
