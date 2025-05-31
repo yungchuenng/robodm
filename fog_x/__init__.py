@@ -2,15 +2,26 @@ import os
 
 __root_dir__ = os.path.dirname(os.path.abspath(__file__))
 
-
 # from fog_x import dataset, episode, feature
 # from fog_x.dataset import Dataset
 # from fog_x import trajectory
 
 from fog_x.feature import FeatureType
 from fog_x.trajectory import Trajectory
+from fog_x.trajectory_base import (FileSystemInterface, TimeProvider,
+                                   TrajectoryInterface)
+from fog_x.trajectory_factory import TrajectoryFactory, create_trajectory
 
-all = ["trajectory"]
+all = [
+    "trajectory",
+    "FeatureType",
+    "Trajectory",
+    "TrajectoryInterface",
+    "FileSystemInterface",
+    "TimeProvider",
+    "TrajectoryFactory",
+    "create_trajectory",
+]
 
 import logging
 

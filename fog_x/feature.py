@@ -1,5 +1,5 @@
 import logging
-from typing import Any, List, Optional, Tuple, Dict
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -43,11 +43,14 @@ class FeatureType:
     def __init__(
         self,
         dtype: Optional[str] = None,
-        shape: Any = None,
+        shape: Optional[Tuple[int, ...]] = None,
         tf_feature_spec=None,
         data=None,
     ) -> None:
         # scalar: (), vector: (n,), matrix: (n,m)
+        self.dtype: str = ""
+        self.shape: Optional[Tuple[int, ...]] = None
+
         if data is not None:
             self.from_data(data)
         elif tf_feature_spec is not None:
@@ -55,21 +58,21 @@ class FeatureType:
         elif dtype is not None:
             self._set(dtype, shape)
 
-
-
     def __str__(self):
         return f"dtype={self.dtype}; shape={self.shape})"
 
     def __repr__(self):
         return self.__str__()
 
-    def _set(self, dtype: str, shape: Any):
+    def _set(self, dtype: str, shape: Optional[Tuple[int, ...]]):
         if dtype == "double":  # fix inferred type
             dtype = "float64"
         if dtype == "float":  # fix inferred type
             dtype = "float32"
+        if dtype == "int":  # fix inferred type
+            dtype = "int32"
         if dtype == "object":
-            dtype = "string" 
+            dtype = "string"
         if dtype not in SUPPORTED_DTYPES:
             raise ValueError(f"Unsupported dtype: {dtype}")
         if shape is not None and not isinstance(shape, tuple):
@@ -82,13 +85,8 @@ class FeatureType:
         Convert from tf feature
         """
         logger.debug(f"tf_feature_spec: {tf_feature_spec}")
-        from tensorflow_datasets.core.features import (
-            FeaturesDict,
-            Image,
-            Scalar,
-            Tensor,
-            Text,
-        )
+        from tensorflow_datasets.core.features import (FeaturesDict, Image,
+                                                       Scalar, Tensor, Text)
 
         if isinstance(tf_feature_spec, Tensor):
             shape = tf_feature_spec.shape
@@ -105,13 +103,12 @@ class FeatureType:
             dtype = "string"
         else:
             raise ValueError(
-                f"Unsupported conversion from tf feature: {tf_feature_spec}"
-            )
+                f"Unsupported conversion from tf feature: {tf_feature_spec}")
         self._set(str(dtype), shape)
         return self
 
     @classmethod
-    def from_data(self, data: Any):
+    def from_data(cls, data: Any):
         """
         Infer feature type from the provided data.
         """
@@ -122,29 +119,34 @@ class FeatureType:
             feature_type._set("bool", ())
         elif isinstance(data, list):
             dtype = type(data[0]).__name__
-            shape = (len(data),)
-            feature_type._set(dtype.name, shape)
+            data_shape: Tuple[int, ...] = (len(data), )
+            feature_type._set(dtype, data_shape)
         else:
             dtype = type(data).__name__
-            shape = ()
+            empty_shape: Tuple[int, ...] = ()
             try:
-                feature_type._set(dtype, shape)
+                feature_type._set(dtype, empty_shape)
             except ValueError as e:
                 print(f"Error: {e}")
                 print(f"dtype: {dtype}")
-                print(f"shape: {shape}")
+                print(f"shape: {empty_shape}")
                 print(f"data: {data}")
                 raise e
         return feature_type
 
     @classmethod
-    def from_str(self, feature_str: str):
+    def from_str(cls, feature_str: str):
         """
         Parse a string representation of the feature type.
         """
-        dtype, shape = feature_str.split(";")
+        dtype, shape_str = feature_str.split(";")
         dtype = dtype.split("=")[1]
-        shape = eval(shape.split("=")[1][:-1]) # strip brackets
+        shape_eval = eval(shape_str.split("=")[1][:-1])  # strip brackets
+        # Ensure shape is a tuple
+        if isinstance(shape_eval, tuple):
+            shape: Optional[Tuple[int, ...]] = shape_eval
+        else:
+            shape = None
         return FeatureType(dtype=dtype, shape=shape)
 
     def to_tf_feature_type(self, first_dim_none=False):
@@ -152,13 +154,8 @@ class FeatureType:
         Convert to tf feature
         """
         import tensorflow as tf
-        from tensorflow_datasets.core.features import (
-            FeaturesDict,
-            Image,
-            Scalar,
-            Tensor,
-            Text,
-        )
+        from tensorflow_datasets.core.features import (FeaturesDict, Image,
+                                                       Scalar, Tensor, Text)
 
         str_dtype_to_tf_dtype = {
             "int8": tf.int8,
@@ -177,12 +174,12 @@ class FeatureType:
             "bool": tf.bool,
         }
         tf_detype = str_dtype_to_tf_dtype[self.dtype]
-        if len(self.shape) == 0:
+        if self.shape is not None and len(self.shape) == 0:
             if self.dtype == "string":
                 return Text()
             else:
                 return Scalar(dtype=tf_detype)
-        elif len(self.shape) >= 1:
+        elif self.shape is not None and len(self.shape) >= 1:
             if first_dim_none:
                 tf_shape = [None] + list(self.shape[1:])
                 return Tensor(shape=tf_shape, dtype=tf_detype)
@@ -192,12 +189,10 @@ class FeatureType:
             raise ValueError(f"Unsupported conversion to tf feature: {self}")
 
     def to_pld_storage_type(self):
-        if len(self.shape) == 0:
+        if self.shape is not None and len(self.shape) == 0:
             if self.dtype == "string":
                 return "large_binary"  # TODO: better representation of strings
             else:
                 return self.dtype
         else:
             return "large_binary"
-
-
