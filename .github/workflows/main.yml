@@ -6,49 +6,198 @@ name: CI
 on:
   # Triggers the workflow on push or pull request events but only for the main branch
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+env:
+  PYTHONPATH: ${{ github.workspace }}
+
 jobs:
+  format-check:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-format-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-format-
+            
+      - name: Install formatting tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install yapf black isort mypy pylint flake8
+          
+      - name: Run format check
+        run: |
+          bash format.sh --all
+          
+      - name: Check for formatting changes
+        run: |
+          if ! git diff --quiet; then
+            echo "Code formatting issues detected. Please run 'bash format.sh --all' locally."
+            git diff
+            exit 1
+          fi
+
   linter:
+    name: Lint
+    runs-on: ubuntu-latest
+    needs: format-check
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.9]
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        python-version: ['3.10', '3.11', '3.12']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-lint-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-lint-${{ matrix.python-version }}-
+            
       - name: Install project
-        run: make install
+        run: |
+          python -m pip install --upgrade pip
+          # Install test dependencies
+          pip install pytest pytest-cov flake8 black mypy isort yapf pylint
+          # Install project in editable mode
+          pip install -e .
+          
       - name: Run linter
         run: make lint
 
-  tests_linux:
+  tests:
+    name: Tests
+    runs-on: ${{ matrix.os }}
     needs: linter
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.9]
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ['3.10', '3.11', '3.12']
+        exclude:
+          # Reduce CI load by testing fewer combinations on non-Ubuntu
+          - os: macos-latest
+            python-version: '3.11'
+          - os: windows-latest
+            python-version: '3.11'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install project
-        run: make install
-      - name: Run tests
-        run: make test
-      - name: "Upload coverage to Codecov"
+          
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-test-${{ matrix.python-version }}-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-test-${{ matrix.python-version }}-
+            
+      - name: Install system dependencies (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          
+      - name: Install system dependencies (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install ffmpeg
+          
+      - name: Install system dependencies (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          # Install ffmpeg via chocolatey
+          choco install ffmpeg -y
+          
+      - name: Install project with test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install test dependencies
+          pip install pytest pytest-cov pytest-benchmark coverage
+          # Install project with optional dependencies for comprehensive testing
+          pip install -e .[all]
+          
+      - name: Run fast tests
+        run: |
+          pytest tests/ -v -m "not slow and not benchmark" --cov=fog_x --cov-report=xml --cov-report=term-missing
+          
+      - name: Run slow tests (Ubuntu only)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
+        run: |
+          pytest tests/ -v -m "slow" --cov=fog_x --cov-append --cov-report=xml
+          
+      - name: Upload coverage to Codecov
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.10'
         uses: codecov/codecov-action@v4
-        # with:
-        #   fail_ci_if_error: true
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
+
+  benchmark:
+    name: Benchmark Tests
+    runs-on: ubuntu-latest
+    needs: tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          
+      - name: Install project with all dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-benchmark
+          pip install -e .[all]
+          
+      - name: Run benchmark tests
+        run: |
+          pytest tests/ -v -m "benchmark" --benchmark-only --benchmark-json=benchmark.json
+          
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        if: always()
+        with:
+          tool: 'pytest'
+          output-file-path: benchmark.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          comment-on-alert: true
+          alert-threshold: '200%'
+          fail-on-alert: false

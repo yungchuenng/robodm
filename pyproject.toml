@@ -23,6 +23,36 @@ hf = ["datasets"]
 rtx = ["tensorflow", "tensorflow_datasets", "envlogger"]
 aws = ["boto3"]
 torch = ["torch"]
+test = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-benchmark>=4.0",
+    "coverage>=7.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+    "pylint>=2.15",
+    "flake8>=6.0",
+    "yapf>=0.32"
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0", 
+    "pytest-benchmark>=4.0",
+    "coverage>=7.0",
+    "black>=23.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+    "pylint>=2.15",
+    "flake8>=6.0",
+    "yapf>=0.32",
+    "datasets",
+    "tensorflow",
+    "tensorflow_datasets", 
+    "envlogger",
+    "boto3",
+    "torch"
+]
 all = ["datasets", "tensorflow", "tensorflow_datasets", "envlogger", "boto3", "smart_open", "torch", "torchvision"]
 
 [project.urls]
