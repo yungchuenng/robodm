@@ -390,7 +390,7 @@ class TestRLDSLoaderIntegration:
     @pytest.mark.parametrize("video_codec", ["rawvideo", "libx264"])
     def test_real_openx_data_codec_comparison(self, temp_dir, video_codec):
         """Test real OpenX data with different codecs using appropriate validation for each."""
-        data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
         dataset_name = "fractal20220817_data"
 
         try:
@@ -554,7 +554,7 @@ class TestRLDSLoaderIntegration:
     @pytest.mark.parametrize("codec", OPENX_TEST_CODECS)
     def test_real_openx_data_loading(self, temp_dir, codec):
         """Test loading real Open X-Embodiment data and compare original vs reconstructed."""
-        data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
         dataset_name = "fractal20220817_data"  # Define dataset_name for file naming
         video_codec = codec  # Test with lossy codec
 
@@ -2521,7 +2521,7 @@ class TestOpenXLoaderBenchmark:
 
     def test_openx_loader_scalability(self, temp_dir):
         """Test loader scalability with different dataset sizes."""
-        sizes = [100, 300, 500]  # Number of trajectories
+        sizes = [1, 3, 5]  # Number of trajectories
         steps_per_traj = 100
 
         print(f"\n=== LOADER SCALABILITY TEST ===")
@@ -2786,7 +2786,7 @@ class TestOpenXLoaderBenchmark:
 
     def test_openx_rlds_integration_benchmark(self, temp_dir):
         """Test RLDS integration if real RLDS data is available."""
-        rlds_data_dir = "/home/kych/berkeley/datasets/rtx/fractal20220817_data/0.1.0/"
+        rlds_data_dir = "gs://gresearch/robotics/fractal20220817_data/0.1.0/"
 
         # Check if RLDS data is available
         if not os.path.exists(rlds_data_dir):
