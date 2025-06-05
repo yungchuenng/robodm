@@ -382,7 +382,9 @@ class Trajectory(TrajectoryInterface):
             • "container" – skip all decoding and just return the file path  
         desired_frequency : float | None, default None
             Target sampling frequency **in hertz**.  If None, every frame is
-            returned (subject to `data_slice`).
+            returned (subject to `data_slice`). For upsampling (when desired
+            frequency is higher than original), prior frames are duplicated
+            to fill temporal gaps. For downsampling, frames are skipped.
         data_slice : slice | None, default None
             Standard Python slice that is applied *after* resampling.  
             Example: `slice(100, 200, 2)` → keep resampled indices 100-199,
@@ -391,13 +393,18 @@ class Trajectory(TrajectoryInterface):
         Notes
         -----
         * Resampling is performed individually for every feature stream.
+        * For upsampling: when time gaps between consecutive frames exceed
+          the desired period, the prior frame is duplicated at regular 
+          intervals to achieve the target frequency.
+        * For downsampling: frames that arrive too close together (within
+          the desired period) are skipped.
         * Slicing is interpreted on the **resampled index** domain so that the
-        combination `desired_frequency + data_slice` behaves the same as
-        `df.iloc[data_slice]` would on a pandas dataframe that had already
-        been down-sampled to `desired_frequency`.
+          combination `desired_frequency + data_slice` behaves the same as
+          `df.iloc[data_slice]` would on a pandas dataframe that had already
+          been resampled to `desired_frequency`.
         * When `data_slice` starts at a positive index we `seek()` to the
-        corresponding timestamp to avoid decoding frames that will be thrown
-        away anyway.
+          corresponding timestamp to avoid decoding frames that will be thrown
+          away anyway.
         """
         logger.debug(f"load() called with return_type='{return_type}', desired_frequency={desired_frequency}, data_slice={data_slice}")
         
@@ -546,6 +553,7 @@ class Trajectory(TrajectoryInterface):
         skipped_frequency = 0
         skipped_slice = 0
         decoded_packets = 0
+        upsampled_frames = 0
         
         for packet in container.demux(streams):
             packet_count += 1
@@ -562,18 +570,41 @@ class Trajectory(TrajectoryInterface):
 
             processed_packets += 1
 
-            # --- per-stream frequency reduction ----------------------------
+            # --- per-stream frequency adjustment (upsampling/downsampling) ---
             if period_ms is not None:
                 lp = last_pts[fname]
                 # Guard both operands – pts is now guaranteed not-None.
-                if lp is not None and (packet.pts - lp) < period_ms:
-                    skipped_frequency += 1
-                    logger.debug(f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
-                    continue
-                else:
+                if lp is not None:
+                    time_gap = packet.pts - lp
+                    
+                    if time_gap < period_ms:
+                        # Downsampling: skip this frame
+                        skipped_frequency += 1
+                        logger.debug(f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+                        continue
+                    elif time_gap > period_ms and cache[fname]:
+                        # Upsampling: insert duplicate frames before processing current frame
+                        # Calculate how many intermediate frames we need
+                        num_intermediate_frames = int(time_gap // period_ms) - 1
+                        
+                        if num_intermediate_frames > 0:
+                            # Get the last frame data for duplication
+                            last_frame_data = cache[fname][-1]
+                            
+                            # Insert intermediate frames
+                            for i in range(1, num_intermediate_frames + 1):
+                                kept_idx[fname] += 1
+                                
+                                if want(kept_idx[fname]):
+                                    cache[fname].append(last_frame_data)
+                                    upsampled_frames += 1
+                                    logger.debug(f"Inserted duplicate frame for '{fname}' at intermediate position {i}/{num_intermediate_frames}, kept_idx={kept_idx[fname]}")
+                    
                     logger.debug(f"Keeping packet for '{fname}' after frequency check: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+                else:
+                    logger.debug(f"First packet for '{fname}', no upsampling needed: pts={packet.pts}")
             else:
-                logger.debug(f"No frequency reduction for '{fname}': period_ms is None")
+                logger.debug(f"No frequency resampling for '{fname}': period_ms is None")
 
             # This packet is being kept at the resampling stage
             kept_idx[fname] += 1
@@ -649,7 +680,7 @@ class Trajectory(TrajectoryInterface):
         container.close()
         
         logger.debug(f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
-                    f"skipped_frequency={skipped_frequency}, skipped_slice={skipped_slice}, decoded={decoded_packets}")
+                    f"skipped_frequency={skipped_frequency}, skipped_slice={skipped_slice}, decoded={decoded_packets}, upsampled_frames={upsampled_frames}")
 
         # ------------------------------------------------------------------ #
         # Convert to numpy arrays
