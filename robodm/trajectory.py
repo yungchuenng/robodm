@@ -21,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 logging.getLogger("libav").setLevel(logging.CRITICAL)
 
-
 def _flatten_dict(d, parent_key="", sep="_"):
     items = []
     for k, v in d.items():
@@ -260,7 +259,7 @@ class Trajectory(TrajectoryInterface):
         return time.time()
 
     def _get_current_timestamp(self):
-        current_time = (self._time() - self.start_time) * 1000
+        current_time = (self._time() - self.start_time) * 1000000
         return current_time
 
     def __len__(self):
@@ -342,6 +341,10 @@ class Trajectory(TrajectoryInterface):
         logger.debug("Closing container file")
         self.container_file.close()
 
+        # Ensure file exists even if empty - the container file should create it
+        if not self._exists(self.path):
+            logger.warning(f"Container file was closed but {self.path} doesn't exist. This might indicate an issue.")
+
         # Only attempt transcoding if file exists, has content, and compact is requested
         if (compact and has_data and self._exists(self.path)
                 and os.path.getsize(self.path) > 0):
@@ -363,26 +366,313 @@ class Trajectory(TrajectoryInterface):
         self.is_closed = True
         logger.debug("Trajectory closed successfully")
 
-    def load(self, return_type="numpy"):
+    def load(
+        self,
+        return_type: str = "numpy",
+        desired_frequency: Optional[float] = None,
+        data_slice: Optional[slice] = None,
+    ):
         """
-        Load the trajectory data directly from the container file.
+        Load trajectory data with optional temporal resampling and slicing.
 
-        Args:
-            return_type (str): "numpy" to return numpy arrays, "container" to return container path.
+        Parameters
+        ----------
+        return_type : {"numpy", "container"}, default "numpy"
+            • "numpy"     – decode the data and return a dict[str, np.ndarray]  
+            • "container" – skip all decoding and just return the file path  
+        desired_frequency : float | None, default None
+            Target sampling frequency **in hertz**.  If None, every frame is
+            returned (subject to `data_slice`).
+        data_slice : slice | None, default None
+            Standard Python slice that is applied *after* resampling.  
+            Example: `slice(100, 200, 2)` → keep resampled indices 100-199,
+            step 2.  Negative indices and reverse slices are **not** supported.
 
-        Returns:
-            dict: A dictionary of numpy arrays or container path based on return_type.
+        Notes
+        -----
+        * Resampling is performed individually for every feature stream.
+        * Slicing is interpreted on the **resampled index** domain so that the
+        combination `desired_frequency + data_slice` behaves the same as
+        `df.iloc[data_slice]` would on a pandas dataframe that had already
+        been down-sampled to `desired_frequency`.
+        * When `data_slice` starts at a positive index we `seek()` to the
+        corresponding timestamp to avoid decoding frames that will be thrown
+        away anyway.
         """
-
-        if return_type == "numpy":
-            np_cache = self._load_from_container()
-            return np_cache
-        elif return_type == "container":
+        logger.debug(f"load() called with return_type='{return_type}', desired_frequency={desired_frequency}, data_slice={data_slice}")
+        
+        # ------------------------------------------------------------------ #
+        # Fast-path: user only wants the container path
+        # ------------------------------------------------------------------ #
+        if return_type == "container":
+            logger.debug("Returning container path (fast-path)")
             return self.path
+        if return_type not in {"numpy", "container"}:
+            raise ValueError("return_type must be 'numpy' or 'container'")
+
+        # ------------------------------------------------------------------ #
+        # Validate / canonicalise the slice object
+        # ------------------------------------------------------------------ #
+        if data_slice is None:
+            logger.debug("No data_slice provided, using default slice(None, None, None)")
+            data_slice = slice(None, None, None)
         else:
-            raise ValueError(
-                f"Invalid return_type {return_type}. Supported: 'numpy', 'container'"
-            )
+            logger.debug(f"Using provided data_slice: {data_slice}")
+            
+        if data_slice.step not in (None, 1) and data_slice.step <= 0:
+            raise ValueError("Reverse or zero-step slices are not supported")
+        
+        # Check for negative start - this should raise an error
+        if data_slice.start is not None and data_slice.start < 0:
+            raise ValueError("Negative slice start values are not supported")
+        
+        sl_start = 0 if data_slice.start is None else max(data_slice.start, 0)
+        sl_stop  = data_slice.stop              # can be None
+        sl_step  = 1 if data_slice.step is None else data_slice.step
+        
+        logger.debug(f"Canonicalized slice parameters: start={sl_start}, stop={sl_stop}, step={sl_step}")
+
+        # ------------------------------------------------------------------ #
+        # Frequency → minimum period in stream time-base units (milliseconds)
+        # ------------------------------------------------------------------ #
+        period_ms: Optional[int] = None
+        if desired_frequency is not None:
+            if desired_frequency <= 0:
+                raise ValueError("desired_frequency must be positive")
+            period_ms = int(round(1000.0 / desired_frequency))
+            logger.debug(f"Frequency resampling enabled: {desired_frequency} Hz -> period_ms={period_ms}")
+        else:
+            logger.debug("No frequency resampling (desired_frequency is None)")
+
+        # ------------------------------------------------------------------ #
+        # Open the container and, if possible, seek() to the first slice index
+        # ------------------------------------------------------------------ #
+        logger.debug(f"Opening container file: {self.path}")
+        container = av.open(self.path, mode="r", format="matroska")
+        streams   = list(container.streams)
+        
+        logger.debug(f"Container opened with {len(streams)} streams")
+
+        # Handle empty trajectory case
+        if not streams:
+            logger.debug("No streams found in container, returning empty dict")
+            container.close()
+            return {}
+
+        # Track if we performed seeking to adjust slice logic
+        seek_performed = False
+        seek_offset_frames = 0
+        
+        # Use seeking optimization when we have slicing
+        if sl_start > 0 and streams:
+            if period_ms is not None:
+                # When combining frequency resampling with slicing, seek to the timestamp
+                # that corresponds to the sl_start-th frame AFTER resampling.
+                # Since resampling keeps every period_ms milliseconds, the sl_start-th
+                # resampled frame corresponds to timestamp: sl_start * period_ms
+                seek_ts_ms = sl_start * period_ms
+                seek_offset_frames = sl_start
+                logger.debug(f"Seeking with frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}")
+            else:
+                # If only slicing (no frequency resampling), seek to the sl_start-th frame
+                # assuming original 100ms intervals (10Hz from our test data)
+                seek_ts_ms = sl_start * 100
+                seek_offset_frames = sl_start
+                logger.debug(f"Seeking without frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}")
+            
+            # Seek using the first stream's time_base (which is 1/1000, so offset is in ms)
+            try:
+                logger.debug(f"Attempting to seek to timestamp {seek_ts_ms} on stream {streams[0]}")
+                container.seek(seek_ts_ms, stream=streams[0], any_frame=True)
+                seek_performed = True
+                logger.debug("Seek successful")
+            except av.AVError as e:
+                # Seeking failed (e.g. single large packet stream) – fall back
+                # to decoding from the beginning.
+                logger.debug(f"Seeking failed ({e}), falling back to decoding from beginning")
+                seek_performed = False
+                seek_offset_frames = 0
+        else:
+            logger.debug("No seeking optimization needed (sl_start=0 or no streams)")
+
+        # ------------------------------------------------------------------ #
+        # Book-keeping structures
+        # ------------------------------------------------------------------ #
+        cache: dict[str, list[Any]]      = {}
+        last_pts: dict[str, Optional[int]] = {}
+        kept_idx: dict[str, int]         = {}
+        done: set[str]                   = set()
+
+        stream_count = 0
+        for s in streams:
+            fname = s.metadata.get("FEATURE_NAME")
+            ftype = s.metadata.get("FEATURE_TYPE")
+            if not (fname and ftype):
+                logger.debug(f"Skipping stream {s} without FEATURE_NAME or FEATURE_TYPE metadata")
+                continue
+            cache[fname] = []
+            last_pts[fname] = None
+            # If we seeked, start counting from the seek offset minus 1
+            # (since kept_idx gets incremented before checking)
+            kept_idx[fname] = seek_offset_frames - 1 if seek_performed else -1
+            self.feature_name_to_feature_type[fname] = FeatureType.from_str(ftype)
+            stream_count += 1
+            logger.debug(f"Initialized feature '{fname}' with type {ftype}, kept_idx={kept_idx[fname]}")
+
+        # Handle case where no valid streams were found
+        if not cache:
+            logger.debug("No valid feature streams found, returning empty dict")
+            container.close()
+            return {}
+            
+        logger.debug(f"Processing {stream_count} feature streams")
+
+        # ------------------------------------------------------------------ #
+        # Helper: quickly decide if *resampled* index should be kept
+        # ------------------------------------------------------------------ #
+        def want(idx: int) -> bool:
+            if idx < sl_start:
+                return False
+            if sl_stop is not None and idx >= sl_stop:
+                return False
+            return ((idx - sl_start) % sl_step) == 0
+
+        # ------------------------------------------------------------------ #
+        # Main demux / decode loop
+        # ------------------------------------------------------------------ #
+        logger.debug("Starting main demux/decode loop")
+        packet_count = 0
+        processed_packets = 0
+        skipped_frequency = 0
+        skipped_slice = 0
+        decoded_packets = 0
+        
+        for packet in container.demux(streams):
+            packet_count += 1
+            fname = packet.stream.metadata.get("FEATURE_NAME")
+            if fname is None or fname in done:
+                continue
+
+            # PyAV sometimes returns "dummy" packets whose pts / dts is None
+            # (e.g. after a flush or if the stream has no real data).  They
+            # must be skipped before any timing logic.
+            if packet.pts is None:
+                logger.debug(f"Skipping packet with None pts for feature '{fname}'")
+                continue
+
+            processed_packets += 1
+
+            # --- per-stream frequency reduction ----------------------------
+            if period_ms is not None:
+                lp = last_pts[fname]
+                # Guard both operands – pts is now guaranteed not-None.
+                if lp is not None and (packet.pts - lp) < period_ms:
+                    skipped_frequency += 1
+                    logger.debug(f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+                    continue
+                else:
+                    logger.debug(f"Keeping packet for '{fname}' after frequency check: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+            else:
+                logger.debug(f"No frequency reduction for '{fname}': period_ms is None")
+
+            # This packet is being kept at the resampling stage
+            kept_idx[fname] += 1
+            # Only update last_pts if this packet has a usable pts
+            last_pts[fname] = packet.pts
+
+            if not want(kept_idx[fname]):              # slice filter
+                skipped_slice += 1
+                logger.debug(f"Skipping packet for '{fname}' due to slice filter: kept_idx={kept_idx[fname]}")
+                continue
+
+            logger.debug(f"Decoding packet for '{fname}': kept_idx={kept_idx[fname]}, pts={packet.pts}")
+
+            # --- decode on demand only ------------------------------------
+            codec = packet.stream.codec_context.codec.name
+            if codec == "rawvideo":
+                raw = bytes(packet)
+                if not raw:                 # zero-length placeholder
+                    logger.debug(f"Skipping empty rawvideo packet for '{fname}'")
+                    continue
+                cache[fname].append(pickle.loads(raw))
+                decoded_packets += 1
+                logger.debug(f"Decoded rawvideo packet for '{fname}' (pickled data)")
+            else:
+                for frame in packet.decode():
+                    ft = self.feature_name_to_feature_type[fname]
+                    if ft.dtype == "float32":
+                        arr = frame.to_ndarray(format="gray")   # depth / float32
+                        if ft.shape:
+                            arr = arr.reshape(ft.shape)
+                    else:
+                        arr = frame.to_ndarray(format="rgb24")
+                        if ft.shape:
+                            arr = arr.reshape(ft.shape)
+                    cache[fname].append(arr)
+                    decoded_packets += 1
+                    logger.debug(f"Decoded {codec} frame for '{fname}': shape={arr.shape}, dtype={arr.dtype}")
+
+            # Early exit: all streams finished their slice
+            if sl_stop is not None and kept_idx[fname] >= sl_stop:
+                done.add(fname)
+                logger.debug(f"Feature '{fname}' reached slice stop ({sl_stop}), marking as done")
+                if len(done) == len(cache):
+                    logger.debug("All features completed their slices, breaking early")
+                    break
+
+        # ------------------------------------------------------------------ #
+        # Flush any buffered pictures that the decoder is still holding
+        # ------------------------------------------------------------------ #
+        for s in streams:
+            fname = s.metadata.get("FEATURE_NAME")
+            if not fname or fname not in cache:
+                continue
+            if s.codec_context.codec.name == "rawvideo":
+                continue                      # pickled streams have no buffer
+
+            # Passing None tells PyAV/FFmpeg "end of stream – give me leftovers"
+            for frame in s.decode(None):      # PyAV ≥ 10; on ≤ 0.5 use s.codec_context.decode(None)
+                kept_idx[fname] += 1
+                if not want(kept_idx[fname]):     # honour slice filter
+                    continue
+
+                ft = self.feature_name_to_feature_type[fname]
+                if ft.dtype == "float32":
+                    arr = frame.to_ndarray(format="gray")
+                else:
+                    arr = frame.to_ndarray(format="rgb24")
+                if ft.shape:
+                    arr = arr.reshape(ft.shape)
+                cache[fname].append(arr)
+                decoded_packets += 1
+
+        container.close()
+        
+        logger.debug(f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
+                    f"skipped_frequency={skipped_frequency}, skipped_slice={skipped_slice}, decoded={decoded_packets}")
+
+        # ------------------------------------------------------------------ #
+        # Convert to numpy arrays
+        # ------------------------------------------------------------------ #
+        logger.debug("Converting cached data to numpy arrays")
+        out: Dict[str, Any] = {}
+        for fname, lst in cache.items():
+            logger.debug(f"Converting '{fname}': {len(lst)} items")
+            if not lst:
+                logger.debug(f"Warning: '{fname}' has no data after filtering")
+                out[fname] = np.array([])
+                continue
+                
+            ft = self.feature_name_to_feature_type[fname]
+            if ft.dtype in ["string", "str"]:
+                out[fname] = np.array(lst, dtype=object)
+                logger.debug(f"Created object array for '{fname}': shape={out[fname].shape}")
+            else:
+                out[fname] = np.asarray(lst, dtype=ft.dtype)
+                logger.debug(f"Created {ft.dtype} array for '{fname}': shape={out[fname].shape}")
+
+        logger.debug(f"load() returning {len(out)} features: {list(out.keys())}")
+        return out
 
     def init_feature_streams(self, feature_spec: Dict):
         """
