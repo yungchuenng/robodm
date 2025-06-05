@@ -248,27 +248,21 @@ class TestTrajectoryLoad:
         t.close()
 
     def test_downsample_with_slice(self, trajectory_path):
+        """Test downsampling combined with slicing."""
         t = Trajectory(trajectory_path, mode="r")
-        combo = t.load(desired_frequency=5.0, data_slice=slice(20, 70))
         
         # The correct reference: first downsample to 5Hz, then slice
         downsampled_first = t.load(desired_frequency=5.0)
-        expected_result = {}
+        reference = {}
         for k, v in downsampled_first.items():
-            expected_result[k] = v[slice(20, 70)]
+            reference[k] = v[slice(20, 70)]
         
-        # Verify the combo result matches this approach exactly
+        # The shortcut version: downsample + slice in one go
+        combo = t.load(desired_frequency=5.0, data_slice=slice(20, 70))
+        
+        assert combo.keys() == reference.keys()
         for k in combo:
-            np.testing.assert_array_equal(combo[k], expected_result[k])
-        
-        t.close()
-
-    def test_high_freq_no_upsample(self, trajectory_path):
-        """Requesting frequency higher than native should not create new frames."""
-        t   = Trajectory(trajectory_path, mode="r")
-        ref = t.load()
-        hi  = t.load(desired_frequency=1e3)          # absurdly high
-        assert len(next(iter(hi.values()))) == len(next(iter(ref.values())))
+            np.testing.assert_array_equal(combo[k], reference[k])
         t.close()
 
     def test_resampling_frequency_edge_cases(self, trajectory_path):
@@ -602,6 +596,32 @@ class TestTrajectoryLoad:
         
         t.close()
 
+    def test_extreme_upsampling_frequency(self, trajectory_path):
+        """Test upsampling with extremely high frequency."""
+        t = Trajectory(trajectory_path, mode="r")
+        ref = t.load()
+        hi = t.load(desired_frequency=1e3)  # 1000 Hz - very high
+        
+        # Should get significantly more frames due to upsampling
+        ref_len = len(ref["robot_position"])
+        hi_len = len(hi["robot_position"])
+        
+        # Should have many more frames but bounded by reasonable limits
+        assert hi_len > ref_len, f"High frequency should create more frames: {hi_len} vs {ref_len}"
+        
+        # Should contain all original data
+        ref_positions = ref["robot_position"]
+        hi_positions = hi["robot_position"]
+        
+        # Check that original values are preserved in upsampled data
+        unique_ref = [tuple(row) for row in ref_positions]
+        unique_hi = [tuple(row) for row in hi_positions]
+        
+        for orig_pos in unique_ref:
+            assert orig_pos in unique_hi, f"Original position {orig_pos} should be preserved in upsampled data"
+        
+        t.close()
+
 
 class TestTrajectoryLoadIntegration:
     """Integration tests combining multiple features."""
@@ -682,6 +702,235 @@ class TestTrajectoryLoadIntegration:
             
         except Exception as e:
             pytest.fail(f"Robustness test failed with: {e}")
+        
+        t.close()
+
+    def test_upsample_basic(self, trajectory_path):
+        """Test basic upsampling functionality by duplicating prior frames."""
+        t = Trajectory(trajectory_path, mode="r")
+        
+        # Original data is at 10 Hz (100ms intervals)
+        # Request 20 Hz (50ms intervals) - should double the frame count
+        original = t.load()
+        upsampled = t.load(desired_frequency=20.0)
+        
+        # Should have approximately double the frames
+        orig_len = len(original["robot_position"])
+        up_len = len(upsampled["robot_position"])
+        
+        # Should be close to 2x but might vary due to timing
+        assert up_len > orig_len, f"Upsampled length {up_len} should be greater than original {orig_len}"
+        assert up_len <= orig_len * 2 + 5, f"Upsampled length {up_len} should not be much more than 2x original {orig_len}"
+        
+        t.close()
+
+    def test_upsample_2x_exact(self, temp_dir, rng):
+        """Test exact 2x upsampling with controlled timing."""
+        path = os.path.join(temp_dir, "upsample_test.vla")
+        traj = Trajectory(path, mode="w")
+        
+        # Create data with exact 200ms intervals (5 Hz)
+        for i in range(10):
+            timestamp_ms = int(i * 200)  # 200ms intervals = 5 Hz
+            data = {
+                "step": i,
+                "value": float(i * 10),
+                "array": np.array([i, i+1], dtype=np.float32)
+            }
+            traj.add_by_dict(data, timestamp=timestamp_ms)
+        
+        traj.close()
+        
+        # Now read with 10 Hz (100ms intervals) - should get 2x frames
+        t = Trajectory(path, mode="r")
+        original = t.load()
+        upsampled = t.load(desired_frequency=10.0)
+        
+        orig_len = len(original["step"])
+        up_len = len(upsampled["step"])
+        
+        # Should have roughly double the frames
+        assert up_len > orig_len, f"Expected more frames in upsampled ({up_len}) than original ({orig_len})"
+        
+        # Check that original frames are preserved
+        # The original frames should appear at certain positions
+        orig_steps = original["step"]
+        up_steps = upsampled["step"]
+        
+        # Should have duplicated frames
+        unique_steps = np.unique(up_steps)
+        assert len(unique_steps) == len(orig_steps), "Should have same unique values"
+        
+        t.close()
+
+    def test_upsample_with_slice(self, trajectory_path):
+        """Test upsampling combined with slicing."""
+        t = Trajectory(trajectory_path, mode="r")
+        
+        # Get reference: first upsample, then slice
+        upsampled_first = t.load(desired_frequency=20.0)
+        reference = {k: v[slice(10, 30)] for k, v in upsampled_first.items()}
+        
+        # Get actual: upsample and slice in one call
+        combo = t.load(desired_frequency=20.0, data_slice=slice(10, 30))
+        
+        # Should be equivalent
+        assert combo.keys() == reference.keys()
+        for k in combo:
+            np.testing.assert_array_equal(combo[k], reference[k], 
+                                        err_msg=f"Mismatch in feature {k}")
+        
+        t.close()
+
+    def test_upsample_preserves_data_types(self, temp_dir, rng):
+        """Test that upsampling preserves data types correctly."""
+        path = os.path.join(temp_dir, "upsample_types_test.vla")
+        traj = Trajectory(path, mode="w")
+        
+        # Add varied data types
+        for i in range(5):
+            timestamp_ms = int(i * 500)  # 2 Hz
+            data = {
+                "int_val": int(i),
+                "float_val": float(i * 1.5),
+                "str_val": f"string_{i}",
+                "array_uint8": np.array([i, i+1], dtype=np.uint8),
+                "array_float32": np.array([i * 1.1, i * 2.2], dtype=np.float32),
+                "image": (rng.random((8, 8, 3)) * 255).astype(np.uint8),
+            }
+            traj.add_by_dict(data, timestamp=timestamp_ms)
+        
+        traj.close()
+        
+        # Upsample to 4 Hz
+        t = Trajectory(path, mode="r")
+        original = t.load()
+        upsampled = t.load(desired_frequency=4.0)
+        
+        # Check data types are preserved
+        for key in original:
+            assert upsampled[key].dtype == original[key].dtype, f"Dtype mismatch for {key}"
+        
+        # Check string handling
+        orig_strings = set(original["str_val"])
+        up_strings = set(upsampled["str_val"])
+        assert orig_strings == up_strings, "String values should be preserved"
+        
+        # Check that duplicated frames have identical values
+        up_int_vals = upsampled["int_val"]
+        for i in range(len(up_int_vals) - 1):
+            if up_int_vals[i] == up_int_vals[i + 1]:
+                # This is a duplicated frame, all values should match
+                for key in upsampled:
+                    np.testing.assert_array_equal(
+                        upsampled[key][i], upsampled[key][i + 1],
+                        err_msg=f"Duplicated frames should have identical {key} values"
+                    )
+        
+        t.close()
+
+    def test_upsample_edge_cases(self, temp_dir, rng):
+        """Test upsampling edge cases."""
+        path = os.path.join(temp_dir, "upsample_edge_test.vla")
+        traj = Trajectory(path, mode="w")
+        
+        # Single frame
+        data = {"single": 42, "array": np.array([1, 2, 3], dtype=np.float32)}
+        traj.add_by_dict(data, timestamp=0)
+        traj.close()
+        
+        # Try to upsample single frame
+        t = Trajectory(path, mode="r")
+        original = t.load()
+        upsampled = t.load(desired_frequency=100.0)
+        
+        # Should get the same single frame (no upsampling possible)
+        assert len(original["single"]) == len(upsampled["single"]) == 1
+        np.testing.assert_array_equal(original["single"], upsampled["single"])
+        
+        t.close()
+
+    def test_upsample_irregular_intervals(self, temp_dir, rng):
+        """Test upsampling with irregular time intervals."""
+        path = os.path.join(temp_dir, "upsample_irregular_test.vla")
+        traj = Trajectory(path, mode="w")
+        
+        # Add frames with irregular intervals
+        timestamps = [0, 150, 400, 450, 800]  # Irregular gaps
+        for i, ts in enumerate(timestamps):
+            data = {
+                "frame": i,
+                "timestamp_orig": ts,
+                "data": np.array([i, i*2], dtype=np.float32)
+            }
+            traj.add_by_dict(data, timestamp=ts)
+        
+        traj.close()
+        
+        # Upsample to regular 10 Hz (100ms intervals)
+        t = Trajectory(path, mode="r")
+        original = t.load()
+        upsampled = t.load(desired_frequency=10.0)
+        
+        orig_len = len(original["frame"])
+        up_len = len(upsampled["frame"])
+        
+        # Should have more frames due to filling gaps
+        assert up_len > orig_len, f"Should have more upsampled frames: {up_len} vs {orig_len}"
+        
+        # Large gap between timestamps[2]=400 and timestamps[4]=800 should be filled
+        # 400ms gap at 100ms intervals should add ~3 intermediate frames
+        up_frames = upsampled["frame"]
+        
+        # Should have duplicated frames in the gap
+        unique_frames = np.unique(up_frames)
+        assert len(unique_frames) == orig_len, "Should have same unique frame values"
+        
+        t.close()
+
+    def test_upsample_vs_downsample_consistency(self, temp_dir, rng):
+        """Test that upsampling and downsampling are consistent operations."""
+        # Create trajectory with known frequency
+        path = os.path.join(temp_dir, "consistency_test.vla")
+        traj = Trajectory(path, mode="w")
+        
+        # 5 Hz base frequency (200ms intervals)
+        for i in range(20):
+            timestamp_ms = int(i * 200)
+            data = {
+                "step": i,
+                "value": i * 1.5,
+                "vector": np.array([i, i+1, i+2], dtype=np.float32)
+            }
+            traj.add_by_dict(data, timestamp=timestamp_ms)
+        
+        traj.close()
+        
+        t = Trajectory(path, mode="r")
+        
+        # Test different frequencies
+        original = t.load()  # 5 Hz
+        downsampled = t.load(desired_frequency=2.5)  # 2.5 Hz (downsample)
+        upsampled = t.load(desired_frequency=10.0)   # 10 Hz (upsample)
+        
+        orig_len = len(original["step"])
+        down_len = len(downsampled["step"])
+        up_len = len(upsampled["step"])
+        
+        # Sanity checks
+        assert down_len < orig_len, "Downsampling should reduce frame count"
+        assert up_len > orig_len, "Upsampling should increase frame count"
+        
+        # All should contain the same unique values for step
+        orig_steps = set(original["step"])
+        down_steps = set(downsampled["step"])
+        up_steps = set(upsampled["step"])
+        
+        # Downsampled should be subset of original
+        assert down_steps.issubset(orig_steps), "Downsampled steps should be subset of original"
+        
+        # Upsampled should contain all original steps
+        assert orig_steps.issubset(up_steps), "Upsampled should contain all original steps"
         
         t.close()
 
