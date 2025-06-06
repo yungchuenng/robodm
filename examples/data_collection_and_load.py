@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 
 import numpy as np
 
@@ -19,6 +20,7 @@ if __name__ == "__main__":
         )
         traj.add("observation/state", np.random.rand(10).astype(np.float32))
         traj.add("action", np.random.rand(7).astype(np.float32))
+        time.sleep(0.1)
 
     # Close the trajectory
     traj.close()

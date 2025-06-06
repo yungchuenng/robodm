@@ -81,7 +81,7 @@ class TestNonShuffleVLALoader:
             loader = NonShuffleVLALoader(pattern)
 
             # Test iteration
-            trajectories = list(loader)
+            trajectories = list(loader.iter_rows())
             assert len(trajectories) == len(working_paths)
 
             for traj in trajectories:
@@ -114,13 +114,17 @@ class TestNonShuffleVLALoader:
 
             dataloader = get_vla_dataloader(path=temp_dir, batch_size=2)
 
-            batches = list(dataloader)
+            batches = list(dataloader.iter_batches())
             assert len(batches) > 0
 
-            # Each batch should contain multiple trajectories
+            # Each batch should be a dictionary with batched arrays
             for batch in batches:
-                assert isinstance(batch, list)
-                assert len(batch) <= 2  # batch size
+                assert isinstance(batch, dict)
+                # Check that we have the expected keys
+                assert "action" in batch
+                # For batch_size=2, the first dimension should be <= 2
+                action_shape = batch["action"].shape
+                assert action_shape[0] <= 2  # batch dimension
 
         except Exception as e:
             pytest.fail(f"VLA dataloader failed with codec {codec}: {e}")
@@ -161,7 +165,7 @@ class TestVLALoaderCodecValidation:
         try:
             # Test loading via VLA loader
             loader = NonShuffleVLALoader(path)
-            trajectories = list(loader)
+            trajectories = list(loader.iter_rows())
 
             assert len(trajectories) == 1
             traj = trajectories[0]
@@ -219,7 +223,7 @@ class TestVLALoaderCodecValidation:
 
                 # Test loader functionality
                 loader = NonShuffleVLALoader(path)
-                trajectories = list(loader)
+                trajectories = list(loader.iter_rows())
 
                 if len(trajectories) == 1 and isinstance(
                         trajectories[0], dict):
@@ -323,7 +327,7 @@ class TestVLALoaderCodecValidation:
 
                 # Test loading
                 loader = NonShuffleVLALoader(path)
-                trajectories = list(loader)
+                trajectories = list(loader.iter_rows())
 
                 assert len(trajectories) == 1
                 traj = trajectories[0]
@@ -432,7 +436,7 @@ class TestLoaderComparison:
 
         # Load via both loaders
         vla_loader = NonShuffleVLALoader(vla_path)
-        vla_data = list(vla_loader)[0]
+        vla_data = list(vla_loader.iter_rows())[0]
 
         from robodm.loader.hdf5 import get_hdf5_dataloader
 
@@ -479,7 +483,7 @@ class TestLoaderError:
         loader = NonShuffleVLALoader(pattern)
 
         # Should handle empty results gracefully
-        trajectories = list(loader)
+        trajectories = list(loader.iter_rows())
         assert len(trajectories) == 0
 
     def test_hdf5_loader_empty_pattern(self, temp_dir):
@@ -505,7 +509,7 @@ class TestLoaderError:
 
         # Should handle corrupted files gracefully
         with pytest.raises(Exception):
-            list(loader)
+            list(loader.iter_rows())
 
 
 class TestLoaderPerformance:
@@ -521,7 +525,7 @@ class TestLoaderPerformance:
 
         # Load and measure (basic test - would need memory profiling for real measurement)
         loader = NonShuffleVLALoader(path)
-        trajectories = list(loader)
+        trajectories = list(loader.iter_rows())
 
         assert len(trajectories) == 1
         assert "observation/image" in trajectories[0]
