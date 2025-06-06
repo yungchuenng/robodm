@@ -170,6 +170,10 @@ Explore the `examples/` directory for more detailed usage patterns:
 - **[Basic Data Collection](./examples/data_collection_and_load.py)**: Simple data collection and loading
 - **[Benchmark Scripts](./tests/)**: Performance testing and optimization
 
+We are actively and heavily refactoring the code to make it more robust and maintainable. See commit `5bbb8b` for the prior ICRA submission. 
+
+
+
 ## 🤝 Contributing
 
 We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on:

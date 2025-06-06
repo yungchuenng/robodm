@@ -103,8 +103,7 @@ class FeatureType:
             dtype = "string"
         else:
             raise ValueError(
-                f"Unsupported conversion from tf feature: {tf_feature_spec}"
-            )
+                f"Unsupported conversion from tf feature: {tf_feature_spec}")
         self._set(str(dtype), shape)
         return self
 
@@ -120,7 +119,7 @@ class FeatureType:
             feature_type._set("bool", ())
         elif isinstance(data, list):
             dtype = type(data[0]).__name__
-            data_shape: Tuple[int, ...] = (len(data),)
+            data_shape: Tuple[int, ...] = (len(data), )
             feature_type._set(dtype, data_shape)
         else:
             dtype = type(data).__name__

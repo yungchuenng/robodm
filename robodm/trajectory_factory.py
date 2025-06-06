@@ -62,6 +62,9 @@ def create_trajectory(
     video_codec: str = "auto",
     codec_options: Optional[Dict[str, Any]] = None,
     feature_name_separator: Text = "/",
+    base_datetime: Optional[Any] = None,
+    time_unit: str = "ms",
+    enforce_monotonic: bool = True,
 ) -> TrajectoryInterface:
     """
     Convenience function to create trajectory with default dependencies.
@@ -72,11 +75,20 @@ def create_trajectory(
         video_codec (str): Video codec to use ("auto", "rawvideo", "h264", "h265", "libaom-av1", "ffv1")
         codec_options (Dict[str, Any]): Additional codec-specific options
         feature_name_separator (Text): Delimiter for feature names
+        base_datetime: Optional base datetime for timestamp calculations
+        time_unit: Default time unit for timestamp inputs ('ns', 'μs', 'ms', 's')
+        enforce_monotonic: Whether to enforce monotonically increasing timestamps
     """
-    return default_factory.create_trajectory(
+    from .trajectory import Trajectory
+
+    # Call Trajectory constructor directly since the factory doesn't support time parameters yet
+    return Trajectory(
         path=path,
         mode=mode,
         video_codec=video_codec,
         codec_options=codec_options,
         feature_name_separator=feature_name_separator,
+        base_datetime=base_datetime,
+        time_unit=time_unit,
+        enforce_monotonic=enforce_monotonic,
     )
