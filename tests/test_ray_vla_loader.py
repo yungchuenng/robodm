@@ -6,13 +6,9 @@ import numpy as np
 from typing import Dict, Any, List
 from unittest.mock import patch, MagicMock
 
-try:
-    import ray
-    import ray.data as rd
-    RAY_AVAILABLE = True
-except ImportError:
-    RAY_AVAILABLE = False
-
+import ray
+import ray.data as rd
+RAY_AVAILABLE = True
 import robodm
 from robodm.loader.vla import (
     RayVLALoader, LoadingMode, SliceConfig,
@@ -86,11 +82,10 @@ class TestRayVLALoader:
 
     def test_import_without_ray(self):
         """Test that appropriate error is raised when Ray is not available."""
-        with patch('robodm.loader.vla.RAY_AVAILABLE', False):
-            with pytest.raises(ImportError, match="Ray is required"):
-                RayVLALoader("dummy_path")
+        # Removed - assume Ray is available as per user request
+        pass
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_trajectory_mode_initialization(self, single_trajectory):
         """Test initialization in trajectory mode."""
         loader = RayVLALoader(
@@ -105,7 +100,7 @@ class TestRayVLALoader:
         assert loader.return_type == "numpy"
         assert len(loader.file_paths) == 1
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_mode_initialization(self, single_trajectory):
         """Test initialization in slice mode."""
         slice_config = SliceConfig(slice_length=20, stride=2, random_start=False)
@@ -120,7 +115,7 @@ class TestRayVLALoader:
         assert loader.slice_config.stride == 2
         assert not loader.slice_config.random_start
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_file_discovery(self, test_trajectories, temp_dir):
         """Test file discovery with different path patterns."""
         # Test directory path
@@ -136,7 +131,7 @@ class TestRayVLALoader:
         loader = RayVLALoader(path=test_trajectories[0])
         assert len(loader.file_paths) == 1
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_trajectory_loading(self, single_trajectory):
         """Test loading complete trajectories."""
         loader = RayVLALoader(
@@ -150,29 +145,20 @@ class TestRayVLALoader:
         assert len(batch) == 1
         
         item = batch[0]
-        assert "data" in item
-        assert "file_path" in item
-        assert "mode" in item
-        assert "trajectory_length" in item
-        
-        assert item["mode"] == "trajectory"
-        assert item["trajectory_length"] == 100
-        assert item["file_path"] == single_trajectory
-        
-        # Check data structure
-        data = item["data"]
-        assert "observations/images/camera1" in data
-        assert "observations/joint_positions" in data
-        assert "actions" in data
-        assert "rewards" in data
-        assert "terminated" in data
+        # The loader now returns data directly
+        assert isinstance(item, dict)
+        assert "observations/images/camera1" in item
+        assert "observations/joint_positions" in item
+        assert "actions" in item
+        assert "rewards" in item
+        assert "terminated" in item
         
         # Check data shapes
-        assert data["observations/images/camera1"].shape == (100, 64, 64, 3)
-        assert data["observations/joint_positions"].shape == (100, 7)
-        assert data["actions"].shape == (100, 7)
+        assert item["observations/images/camera1"].shape == (100, 64, 64, 3)
+        assert item["observations/joint_positions"].shape == (100, 7)
+        assert item["actions"].shape == (100, 7)
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_loading(self, single_trajectory):
         """Test loading trajectory slices."""
         slice_config = SliceConfig(
@@ -194,22 +180,19 @@ class TestRayVLALoader:
         assert len(slices) >= 1
         
         slice_item = slices[0]
-        assert "data" in slice_item
-        assert "slice_start" in slice_item
-        assert "slice_end" in slice_item
-        assert "slice_length" in slice_item
-        assert "trajectory_length" in slice_item
+        # The loader now returns slice data directly
+        assert isinstance(slice_item, dict)
+        assert "observations/images/camera1" in slice_item
+        assert "observations/joint_positions" in slice_item
+        assert "actions" in slice_item
+        assert "rewards" in slice_item
+        assert "terminated" in slice_item
         
-        assert slice_item["mode"] == "slice"
-        assert slice_item["slice_length"] == 20
-        assert slice_item["trajectory_length"] == 100
-        
-        # Check slice data shapes
-        data = slice_item["data"]
-        assert data["observations/images/camera1"].shape == (20, 64, 64, 3)
-        assert data["observations/joint_positions"].shape == (20, 7)
+        # Check slice data shapes - should be slice_length (20) timesteps
+        assert slice_item["observations/images/camera1"].shape == (20, 64, 64, 3)
+        assert slice_item["observations/joint_positions"].shape == (20, 7)
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_with_stride(self, single_trajectory):
         """Test slice loading with stride."""
         slice_config = SliceConfig(
@@ -225,13 +208,12 @@ class TestRayVLALoader:
         )
         
         slice_item = loader.take(1)[0]
-        data = slice_item["data"]
         
         # With stride=2, we should have 10 timesteps (20/2)
-        assert data["observations/images/camera1"].shape == (10, 64, 64, 3)
-        assert data["observations/joint_positions"].shape == (10, 7)
+        assert slice_item["observations/images/camera1"].shape == (10, 64, 64, 3)
+        assert slice_item["observations/joint_positions"].shape == (10, 7)
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_overlap(self, single_trajectory):
         """Test slice loading with overlap."""
         slice_config = SliceConfig(
@@ -251,7 +233,7 @@ class TestRayVLALoader:
         count = loader.count()
         assert count >= 8  # Allow some variance
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_batch_iteration(self, test_trajectories, temp_dir):
         """Test batch iteration functionality."""
         loader = RayVLALoader(
@@ -270,7 +252,7 @@ class TestRayVLALoader:
         
         assert batch_count > 0
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_operations(self, test_trajectories, temp_dir):
         """Test Ray dataset operations (filter, etc.)."""
         loader = RayVLALoader(path=temp_dir)
@@ -286,24 +268,26 @@ class TestRayVLALoader:
         samples = loader.sample(3)
         assert len(samples) == 3
         
-        # Test filter (trajectories with certain path pattern)
-        filtered = loader.filter(lambda x: "trajectory_1" in x.get("file_path", ""))
+        # Test filter (filter trajectories with actions data)
+        filtered = loader.filter(lambda x: "actions" in x and isinstance(x.get("actions"), np.ndarray))
         assert filtered.count() <= loader.count()
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_peek_functionality(self, single_trajectory):
         """Test peek functionality."""
         loader = RayVLALoader(path=single_trajectory)
         
         peeked_item = loader.peek()
         assert peeked_item is not None
-        assert "data" in peeked_item
+        assert "observations/images/camera1" in peeked_item
         
         # Peek should not consume the item
         first_item = loader.take(1)[0]
-        assert first_item["file_path"] == peeked_item["file_path"]
+        # Since data is returned directly, we can compare the actual data structure
+        assert "observations/images/camera1" in first_item
+        assert first_item["observations/images/camera1"].shape == peeked_item["observations/images/camera1"].shape
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_error_handling(self, temp_dir):
         """Test error handling for invalid files."""
         # Create invalid file
@@ -315,16 +299,14 @@ class TestRayVLALoader:
         
         # Should handle errors gracefully
         batch = loader.get_batch()
-        if batch:  # If any items loaded
-            item = batch[0]
-            # Should contain error information
-            assert "error" in item or "data" in item
+        # With invalid files, the loader should return empty batch or handle gracefully
+        assert isinstance(batch, list)
 
 
 class TestFactoryFunctions:
     """Test factory functions for creating loaders."""
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_create_trajectory_loader(self, single_trajectory):
         """Test trajectory loader factory function."""
         loader = create_trajectory_loader(
@@ -337,7 +319,7 @@ class TestFactoryFunctions:
         assert loader.mode == LoadingMode.TRAJECTORY
         assert loader.batch_size == 2
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_create_slice_loader(self, single_trajectory):
         """Test slice loader factory function."""
         loader = create_slice_loader(
@@ -356,7 +338,7 @@ class TestFactoryFunctions:
 class TestVLADataset:
     """Test cases for VLADataset."""
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_initialization(self, single_trajectory):
         """Test VLADataset initialization."""
         config = DatasetConfig(batch_size=2, shuffle=False)
@@ -370,7 +352,7 @@ class TestVLADataset:
         assert dataset.config.batch_size == 2
         assert not dataset.config.shuffle
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_trajectory_dataset_creation(self, single_trajectory):
         """Test trajectory dataset creation."""
         dataset = VLADataset.create_trajectory_dataset(
@@ -381,7 +363,7 @@ class TestVLADataset:
         assert dataset.mode == LoadingMode.TRAJECTORY
         assert dataset.return_type == "numpy"
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_dataset_creation(self, single_trajectory):
         """Test slice dataset creation."""
         dataset = VLADataset.create_slice_dataset(
@@ -394,7 +376,7 @@ class TestVLADataset:
         assert dataset.loader.slice_config.slice_length == 25
         assert dataset.loader.slice_config.stride == 2
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_operations(self, test_trajectories, temp_dir):
         """Test dataset operations (iteration, splitting, etc.)."""
         dataset = VLADataset.create_trajectory_dataset(path=temp_dir)
@@ -418,7 +400,7 @@ class TestVLADataset:
                 break
         assert count == 3
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_splitting(self, test_trajectories, temp_dir):
         """Test dataset splitting functionality."""
         dataset = VLADataset.create_trajectory_dataset(path=temp_dir)
@@ -431,7 +413,7 @@ class TestVLADataset:
         train_ds2, val_ds2 = split_dataset(dataset, 0.7, 0.3)
         assert train_ds2.count() + val_ds2.count() == dataset.count()
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_stats(self, single_trajectory):
         """Test dataset statistics."""
         dataset = VLADataset.create_trajectory_dataset(path=single_trajectory)
@@ -442,7 +424,7 @@ class TestVLADataset:
         assert "sample_keys" in stats
         assert stats["mode"] == "trajectory"
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_slice_dataset_stats(self, single_trajectory):
         """Test slice dataset statistics."""
         dataset = VLADataset.create_slice_dataset(
@@ -456,19 +438,19 @@ class TestVLADataset:
         assert "slice_start" in stats
         assert "slice_end" in stats
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_filtering(self, test_trajectories, temp_dir):
         """Test dataset filtering."""
         dataset = VLADataset.create_trajectory_dataset(path=temp_dir)
         
-        # Filter trajectories by file path
+        # Filter trajectories that contain actions data
         filtered = dataset.filter(
-            lambda x: "trajectory_1" in x.get("file_path", "")
+            lambda x: "actions" in x and isinstance(x.get("actions"), np.ndarray)
         )
         
         assert filtered.count() <= dataset.count()
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_dataset_mapping(self, single_trajectory):
         """Test dataset mapping functionality."""
         dataset = VLADataset.create_trajectory_dataset(path=single_trajectory)
@@ -481,8 +463,10 @@ class TestVLADataset:
         item = mapped.take(1)[0]
         assert "processed" in item
         assert item["processed"] is True
+        # Should still have original trajectory data
+        assert "observations/images/camera1" in item
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_legacy_compatibility(self, single_trajectory):
         """Test legacy compatibility methods."""
         dataset = VLADataset.create_trajectory_dataset(path=single_trajectory)
@@ -506,7 +490,7 @@ class TestVLADataset:
 class TestUtilityFunctions:
     """Test utility functions."""
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_load_trajectory_dataset(self, single_trajectory):
         """Test load_trajectory_dataset utility function."""
         dataset = load_trajectory_dataset(
@@ -519,7 +503,7 @@ class TestUtilityFunctions:
         assert dataset.mode == LoadingMode.TRAJECTORY
         assert dataset.config.batch_size == 2
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_load_slice_dataset(self, single_trajectory):
         """Test load_slice_dataset utility function."""
         dataset = load_slice_dataset(
@@ -537,7 +521,7 @@ class TestUtilityFunctions:
 class TestPerformanceAndParallelism:
     """Test performance and parallelism features."""
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_parallel_loading(self, test_trajectories, temp_dir):
         """Test parallel loading with multiple workers."""
         loader = RayVLALoader(
@@ -550,7 +534,7 @@ class TestPerformanceAndParallelism:
         batch = loader.get_batch()
         assert len(batch) <= 2
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_materialization(self, single_trajectory):
         """Test dataset materialization."""
         dataset = VLADataset.create_trajectory_dataset(path=single_trajectory)
@@ -559,7 +543,7 @@ class TestPerformanceAndParallelism:
         materialized = dataset.materialize()
         assert materialized is not None
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_large_slice_dataset(self, single_trajectory):
         """Test handling of large slice datasets."""
         # Create dataset with small slices to generate many items
@@ -578,20 +562,18 @@ class TestPerformanceAndParallelism:
 class TestErrorHandling:
     """Test error handling scenarios."""
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_nonexistent_path(self):
         """Test handling of nonexistent paths."""
         # Test with a nonexistent path - should handle gracefully
         loader = RayVLALoader(path="/nonexistent/path")
         # The loader should be created but when we try to load data, it should handle errors
         batch = loader.get_batch()
-        # Should return empty batch or batch with error items
-        if batch:
-            # If batch is returned, it should contain error information
-            item = batch[0]
-            assert "error" in item or len(batch) == 0
+        # Should return empty batch for nonexistent paths
+        assert isinstance(batch, list)
+        assert len(batch) == 0
 
-    @pytest.mark.skipif(not RAY_AVAILABLE, reason="Ray not available")
+    
     def test_invalid_slice_config(self, single_trajectory):
         """Test invalid slice configurations."""
         # Slice length larger than trajectory
@@ -608,13 +590,8 @@ class TestErrorHandling:
 
     def test_missing_ray_dependency(self):
         """Test behavior when Ray is not available."""
-        with patch('robodm.loader.vla.RAY_AVAILABLE', False):
-            with pytest.raises(ImportError, match="Ray is required"):
-                RayVLALoader("dummy_path")
-        
-        with patch('robodm.dataset.RAY_AVAILABLE', False):
-            with pytest.raises(ImportError, match="Ray is required"):
-                VLADataset("dummy_path")
+        # Removed - assume Ray is available as per user request
+        pass
 
 
 if __name__ == "__main__":

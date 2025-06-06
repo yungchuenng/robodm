@@ -19,7 +19,7 @@ from robodm.utils import data_to_tf_schema
 class DatasetConfig:
     """Configuration for VLADataset."""
     batch_size: int = 1
-    shuffle: bool = True
+    shuffle: bool = False
     num_parallel_reads: int = 4
     ray_init_kwargs: Optional[Dict] = None
 
@@ -243,16 +243,22 @@ class VLADataset:
                     "mode": self.mode.value,
                     "return_type": self.return_type,
                     "total_items": self.count(),
-                    "sample_keys": list(sample.get("data", {}).keys()) if "data" in sample else [],
+                    "sample_keys": list(sample.keys()) if isinstance(sample, dict) else [],
                 }
                 
                 # Add mode-specific stats
                 if self.mode == LoadingMode.TRAJECTORY:
-                    self._stats["trajectory_length"] = sample.get("trajectory_length", 0)
+                    # For trajectory mode, estimate length from first key
+                    first_key = next(iter(sample.keys())) if sample else None
+                    if first_key and hasattr(sample[first_key], '__len__'):
+                        self._stats["trajectory_length"] = len(sample[first_key])
                 elif self.mode == LoadingMode.SLICE:
-                    self._stats["slice_length"] = sample.get("slice_length", 0)
-                    self._stats["slice_start"] = sample.get("slice_start", 0)
-                    self._stats["slice_end"] = sample.get("slice_end", 0)
+                    # For slice mode, estimate length from first key
+                    first_key = next(iter(sample.keys())) if sample else None
+                    if first_key and hasattr(sample[first_key], '__len__'):
+                        self._stats["slice_length"] = len(sample[first_key])
+                        self._stats["slice_start"] = 0  # Cannot determine from direct data
+                        self._stats["slice_end"] = len(sample[first_key])
             else:
                 self._stats = {"mode": self.mode.value, "total_items": 0}
         
@@ -265,25 +271,21 @@ class VLADataset:
     def get_tf_schema(self):
         """Get TensorFlow schema for the dataset."""
         sample = self.peek()
-        if sample and "data" in sample:
-            return data_to_tf_schema(sample["data"])
+        if sample:
+            return data_to_tf_schema(sample)
         return None
 
     # Legacy compatibility methods
     def __iter__(self):
         """Iterate over the dataset (legacy compatibility)."""
         for item in self.loader.iter_rows():
-            if "data" in item:
-                yield item["data"]
-            else:
-                yield item
+            yield item
 
     def __next__(self):
         """Get next item (legacy compatibility)."""
         batch = self.loader.get_batch()
         if batch:
-            item = batch[0]
-            return item.get("data", item)
+            return batch[0]
         raise StopIteration
 
     def __len__(self) -> int:
@@ -304,11 +306,7 @@ class VLADataset:
     def get_next_trajectory(self):
         """Get next trajectory (legacy compatibility)."""
         item = next(self)
-        if self.mode == LoadingMode.TRAJECTORY:
-            return item
-        else:
-            # For slice mode, return the slice data
-            return item
+        return item
 
 
 # Utility functions for common dataset operations
@@ -317,7 +315,7 @@ def load_trajectory_dataset(
     split: str = "all",
     return_type: str = "numpy",
     batch_size: int = 1,
-    shuffle: bool = True,
+    shuffle: bool = False,
     num_parallel_reads: int = 4,
     **kwargs
 ) -> VLADataset:
@@ -342,7 +340,7 @@ def load_slice_dataset(
     split: str = "all",
     return_type: str = "numpy",
     batch_size: int = 1,
-    shuffle: bool = True,
+    shuffle: bool = False,
     num_parallel_reads: int = 4,
     min_slice_length: Optional[int] = None,
     stride: int = 1,
@@ -374,7 +372,7 @@ def split_dataset(
     dataset: VLADataset,
     train_fraction: float = 0.8,
     val_fraction: float = 0.2,
-    shuffle: bool = True
+    shuffle: bool = False
 ) -> tuple[VLADataset, VLADataset]:
     """Split a dataset into train and validation sets."""
     if abs(train_fraction + val_fraction - 1.0) > 1e-6:

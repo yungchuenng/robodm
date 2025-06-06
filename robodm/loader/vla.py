@@ -51,7 +51,7 @@ class RayVLALoader(BaseLoader):
         mode: LoadingMode = LoadingMode.TRAJECTORY,
         batch_size: int = 1,
         return_type: str = "numpy",
-        shuffle: bool = True,
+        shuffle: bool = False,
         num_parallel_reads: int = 4,
         slice_config: Optional[SliceConfig] = None,
         ray_init_kwargs: Optional[Dict] = None,
@@ -148,24 +148,11 @@ class RayVLALoader(BaseLoader):
             traj = robodm.Trajectory(file_path)
             data = traj.load(return_type=self.return_type)
             
-            # Add metadata
-            result = {
-                "data": data,
-                "file_path": file_path,
-                "mode": self.mode.value,
-                "trajectory_length": len(next(iter(data.values()))) if data else 0
-            }
-            return result
+            return data
             
         except Exception as e:
             logger.error(f"Error loading trajectory {file_path}: {e}")
-            return {
-                "data": {},
-                "file_path": file_path,
-                "mode": self.mode.value,
-                "trajectory_length": 0,
-                "error": str(e)
-            }
+            return {}
 
     def _extract_slices(self, item) -> List[Dict[str, Any]]:
         """Extract slices from a trajectory file."""
@@ -222,16 +209,7 @@ class RayVLALoader(BaseLoader):
                     else:
                         slice_data[key] = values
                 
-                slice_info = {
-                    "data": slice_data,
-                    "file_path": file_path,
-                    "mode": self.mode.value,
-                    "slice_start": start_idx,
-                    "slice_end": end_idx,
-                    "slice_length": actual_length,
-                    "trajectory_length": traj_length
-                }
-                slices.append(slice_info)
+                slices.append(slice_data)
             
             return slices
             
@@ -381,12 +359,27 @@ class NonShuffleVLALoader(RayVLALoader):
         )
 
 
+def get_vla_dataloader(path: Text, batch_size: int = 1, num_workers: int = 1, **kwargs):
+    """Legacy function to get VLA dataloader - deprecated, use create_trajectory_loader instead."""
+    logger.warning("get_vla_dataloader is deprecated. Use create_trajectory_loader instead.")
+    loader = RayVLALoader(
+        path=path,
+        mode=LoadingMode.TRAJECTORY,
+        batch_size=batch_size,
+        return_type="numpy",
+        shuffle=True,
+        num_parallel_reads=max(1, num_workers),
+        **kwargs
+    )
+    return loader
+
+
 # Factory functions for common use cases
 def create_trajectory_loader(
     path: Text,
     batch_size: int = 1,
     return_type: str = "numpy",
-    shuffle: bool = True,
+    shuffle: bool = False,
     num_parallel_reads: int = 4,
     **kwargs
 ) -> RayVLALoader:
@@ -407,7 +400,7 @@ def create_slice_loader(
     slice_length: int = 100,
     batch_size: int = 1,
     return_type: str = "numpy",
-    shuffle: bool = True,
+    shuffle: bool = False,
     num_parallel_reads: int = 4,
     min_slice_length: Optional[int] = None,
     stride: int = 1,
