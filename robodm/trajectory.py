@@ -7,7 +7,8 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
-from typing import Any, Dict, List, Optional, Text, cast
+from typing import Any, Dict, List, Optional, Text, cast, Union
+from datetime import datetime, timezone, timedelta
 
 import av
 import h5py
@@ -30,6 +31,254 @@ def _flatten_dict(d, parent_key="", sep="_"):
         else:
             items.append((new_key, v))
     return dict(items)
+
+
+class TimeManager:
+    """
+    Comprehensive time management system for robodm trajectories.
+    
+    Handles:
+    - Multiple time units (nanoseconds, microseconds, milliseconds, seconds)
+    - Base datetime reference points  
+    - Monotonic timestamp enforcement
+    - Unit conversions
+    - Per-timestep timing from base datetime
+    """
+    
+    # Time unit conversion factors to nanoseconds
+    TIME_UNITS = {
+        'ns': 1,
+        'nanoseconds': 1,
+        'μs': 1_000,
+        'us': 1_000,
+        'microseconds': 1_000,
+        'ms': 1_000_000,
+        'milliseconds': 1_000_000,
+        's': 1_000_000_000,
+        'seconds': 1_000_000_000,
+    }
+    
+    # Trajectory time base (for robodm compatibility)
+    TRAJECTORY_TIME_BASE = Fraction(1, 1000)  # milliseconds
+    
+    def __init__(self, 
+                 base_datetime: Optional[datetime] = None,
+                 time_unit: str = 'ms',
+                 enforce_monotonic: bool = True):
+        """
+        Initialize TimeManager.
+        
+        Parameters:
+        -----------
+        base_datetime : datetime, optional
+            Reference datetime for relative timestamps. If None, uses current time.
+        time_unit : str
+            Default time unit for timestamp inputs ('ns', 'μs', 'ms', 's')
+        enforce_monotonic : bool
+            Whether to enforce monotonically increasing timestamps
+        """
+        self.base_datetime = base_datetime or datetime.now(timezone.utc)
+        self.time_unit = time_unit
+        self.enforce_monotonic = enforce_monotonic
+        
+        # Internal state
+        self._last_timestamp_ns = 0
+        self._start_time = time.time()
+        
+        # Validate time unit
+        if time_unit not in self.TIME_UNITS:
+            raise ValueError(f"Unsupported time unit: {time_unit}. "
+                           f"Supported: {list(self.TIME_UNITS.keys())}")
+    
+    def reset(self, base_datetime: Optional[datetime] = None):
+        """Reset the time manager with new base datetime."""
+        if base_datetime:
+            self.base_datetime = base_datetime
+        self._last_timestamp_ns = 0
+        self._start_time = time.time()
+    
+    def current_timestamp(self, unit: Optional[str] = None) -> int:
+        """
+        Get current timestamp relative to start time.
+        
+        Parameters:
+        -----------
+        unit : str, optional
+            Time unit for returned timestamp. If None, uses default unit.
+            
+        Returns:
+        --------
+        int : Current timestamp in specified unit
+        """
+        unit = unit or self.time_unit
+        current_time_ns = int((time.time() - self._start_time) * 1_000_000_000)
+        return self.convert_from_nanoseconds(current_time_ns, unit)
+    
+    def datetime_to_timestamp(self, dt: datetime, unit: Optional[str] = None) -> int:
+        """
+        Convert datetime to timestamp relative to base_datetime.
+        
+        Parameters:
+        -----------
+        dt : datetime
+            Datetime to convert
+        unit : str, optional
+            Target time unit. If None, uses default unit.
+            
+        Returns:
+        --------
+        int : Timestamp in specified unit
+        """
+        unit = unit or self.time_unit
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if self.base_datetime.tzinfo is None:
+            base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
+        else:
+            base_dt = self.base_datetime
+            
+        delta_seconds = (dt - base_dt).total_seconds()
+        delta_ns = int(delta_seconds * 1_000_000_000)
+        return self.convert_from_nanoseconds(delta_ns, unit)
+    
+    def timestamp_to_datetime(self, timestamp: int, unit: Optional[str] = None) -> datetime:
+        """
+        Convert timestamp to datetime using base_datetime as reference.
+        
+        Parameters:
+        -----------
+        timestamp : int
+            Timestamp value
+        unit : str, optional
+            Time unit of input timestamp. If None, uses default unit.
+            
+        Returns:
+        --------
+        datetime : Corresponding datetime
+        """
+        unit = unit or self.time_unit
+        timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
+        delta_seconds = timestamp_ns / 1_000_000_000
+        
+        if self.base_datetime.tzinfo is None:
+            base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
+        else:
+            base_dt = self.base_datetime
+            
+        return base_dt + timedelta(seconds=delta_seconds)
+    
+    def convert_to_nanoseconds(self, timestamp: Union[int, float], unit: str) -> int:
+        """Convert timestamp from given unit to nanoseconds."""
+        if unit not in self.TIME_UNITS:
+            raise ValueError(f"Unsupported time unit: {unit}")
+        return int(timestamp * self.TIME_UNITS[unit])
+    
+    def convert_from_nanoseconds(self, timestamp_ns: int, unit: str) -> int:
+        """Convert timestamp from nanoseconds to given unit."""
+        if unit not in self.TIME_UNITS:
+            raise ValueError(f"Unsupported time unit: {unit}")
+        return int(timestamp_ns // self.TIME_UNITS[unit])
+    
+    def convert_units(self, timestamp: Union[int, float], 
+                     from_unit: str, to_unit: str) -> int:
+        """Convert timestamp between different units."""
+        timestamp_ns = self.convert_to_nanoseconds(timestamp, from_unit)
+        return self.convert_from_nanoseconds(timestamp_ns, to_unit)
+    
+    def validate_timestamp(self, timestamp: int, unit: Optional[str] = None) -> int:
+        """
+        Validate and potentially adjust timestamp for monotonic ordering.
+        
+        Parameters:
+        -----------
+        timestamp : int
+            Input timestamp
+        unit : str, optional
+            Time unit of input timestamp
+            
+        Returns:
+        --------
+        int : Validated timestamp in trajectory time base units (milliseconds)
+        """
+        unit = unit or self.time_unit
+        timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
+        
+        if self.enforce_monotonic:
+            if timestamp_ns <= self._last_timestamp_ns:
+                # Adjust to maintain monotonic ordering - add 1ms worth of nanoseconds to ensure difference
+                timestamp_ns = self._last_timestamp_ns + 1_000_000  # +1ms in nanoseconds
+                logger.debug(f"Adjusted timestamp to maintain monotonic ordering: {timestamp_ns} ns")
+            
+            self._last_timestamp_ns = timestamp_ns
+        
+        # Convert to trajectory time base (milliseconds)
+        return self.convert_from_nanoseconds(timestamp_ns, 'ms')
+    
+    def add_timestep(self, timestep: Union[int, float], unit: Optional[str] = None) -> int:
+        """
+        Add a timestep to the last timestamp and return trajectory-compatible timestamp.
+        
+        Parameters:
+        -----------
+        timestep : int or float
+            Time step to add
+        unit : str, optional
+            Time unit of timestep
+            
+        Returns:
+        --------
+        int : New timestamp in trajectory time base units (milliseconds)
+        """
+        unit = unit or self.time_unit
+        timestep_ns = self.convert_to_nanoseconds(timestep, unit)
+        new_timestamp_ns = self._last_timestamp_ns + timestep_ns
+        
+        self._last_timestamp_ns = new_timestamp_ns
+        return self.convert_from_nanoseconds(new_timestamp_ns, 'ms')
+    
+    def create_timestamp_sequence(self, start_timestamp: int, 
+                                count: int, 
+                                timestep: Union[int, float],
+                                unit: Optional[str] = None) -> List[int]:
+        """
+        Create a sequence of monotonic timestamps.
+        
+        Parameters:
+        -----------
+        start_timestamp : int
+            Starting timestamp
+        count : int
+            Number of timestamps to generate
+        timestep : int or float
+            Time step between consecutive timestamps
+        unit : str, optional
+            Time unit for inputs
+            
+        Returns:
+        --------
+        List[int] : List of timestamps in trajectory time base units
+        """
+        unit = unit or self.time_unit
+        start_ns = self.convert_to_nanoseconds(start_timestamp, unit)
+        timestep_ns = self.convert_to_nanoseconds(timestep, unit)
+        
+        timestamps = []
+        current_ns = start_ns
+        
+        for i in range(count):
+            # Ensure monotonic ordering if enforce_monotonic is True
+            if self.enforce_monotonic and current_ns <= self._last_timestamp_ns:
+                current_ns = self._last_timestamp_ns + 1_000_000  # +1ms in nanoseconds
+            
+            timestamps.append(self.convert_from_nanoseconds(current_ns, 'ms'))
+            
+            # Update last timestamp only if monotonic enforcement is enabled
+            if self.enforce_monotonic:
+                self._last_timestamp_ns = current_ns
+                
+            current_ns += timestep_ns
+            
+        return timestamps
 
 
 class StreamInfo:
@@ -163,6 +412,9 @@ class Trajectory(TrajectoryInterface):
         feature_name_separator: Text = "/",
         filesystem: Optional[Any] = None,
         time_provider: Optional[Any] = None,
+        base_datetime: Optional[datetime] = None,
+        time_unit: str = "ms",
+        enforce_monotonic: bool = True,
     ) -> None:
         """
         Args:
@@ -175,6 +427,9 @@ class Trajectory(TrajectoryInterface):
                 Defaults to "/".
             filesystem: Optional filesystem interface for dependency injection
             time_provider: Optional time provider interface for dependency injection
+            base_datetime: Optional base datetime for timestamp calculations
+            time_unit: Default time unit for timestamp inputs ('ns', 'μs', 'ms', 's')
+            enforce_monotonic: Whether to enforce monotonically increasing timestamps
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
@@ -195,6 +450,13 @@ class Trajectory(TrajectoryInterface):
         # Dependency injection - set early so they're available during init
         self._filesystem = filesystem
         self._time_provider = time_provider
+
+        # Initialize time management system
+        self.time_manager = TimeManager(
+            base_datetime=base_datetime,
+            time_unit=time_unit,
+            enforce_monotonic=enforce_monotonic
+        )
 
         self.feature_name_to_stream: Dict[str,
                                           Any] = {}  # feature_name: stream
@@ -722,18 +984,20 @@ class Trajectory(TrajectoryInterface):
         feature: str,
         data: Any,
         timestamp: Optional[int] = None,
+        time_unit: Optional[str] = None,
     ) -> None:
         """
         add one value to container file
 
         Args:
             feature (str): name of the feature
-            value (Any): value associated with the feature; except dictionary
-            timestamp (optional int): nanoseconds since the Epoch.
-                If not provided, the current time is used.
+            data (Any): value associated with the feature; except dictionary
+            timestamp (optional int): timestamp value. If not provided, the current time is used.
+            time_unit (optional str): time unit of the timestamp. If not provided, uses trajectory default.
 
         Examples:
             >>> trajectory.add('feature1', 'image1.jpg')
+            >>> trajectory.add('feature1', 'image1.jpg', timestamp=1000, time_unit='ms')
 
         Logic:
         - check the feature name
@@ -771,13 +1035,15 @@ class Trajectory(TrajectoryInterface):
         stream = self.feature_name_to_stream[feature]
         logger.debug(f"Using stream: {stream}")
 
-        # get the timestamp
+        # get the timestamp using TimeManager
         if timestamp is None:
-            timestamp = self._get_current_timestamp()
+            validated_timestamp = self.time_manager.current_timestamp('ms')
+        else:
+            validated_timestamp = self.time_manager.validate_timestamp(timestamp, time_unit)
 
-        logger.debug(f"Encoding frame with timestamp: {timestamp}")
+        logger.debug(f"Encoding frame with validated timestamp: {validated_timestamp}")
         # encode the frame
-        packets = self._encode_frame(data, stream, timestamp)
+        packets = self._encode_frame(data, stream, validated_timestamp)
         logger.debug(f"Generated {len(packets)} packets")
 
         # write the packet to the container
@@ -793,6 +1059,7 @@ class Trajectory(TrajectoryInterface):
         self,
         data: Dict[str, Any],
         timestamp: Optional[int] = None,
+        time_unit: Optional[str] = None,
     ) -> None:
         """
         add one value to container file
@@ -800,8 +1067,8 @@ class Trajectory(TrajectoryInterface):
 
         Args:
             data (Dict[str, Any]): dictionary of feature name and value
-            timestamp (optional int): nanoseconds since the Epoch.
-                If not provided, the current time is used.
+            timestamp (optional int): timestamp value. If not provided, the current time is used.
+            time_unit (optional str): time unit of the timestamp. If not provided, uses trajectory default.
                 assume the timestamp is same for all the features within the dictionary
 
         Examples:
@@ -817,10 +1084,15 @@ class Trajectory(TrajectoryInterface):
 
         _flatten_dict_data = _flatten_dict(data,
                                            sep=self.feature_name_separator)
-        timestamp = self._get_current_timestamp(
-        ) if timestamp is None else timestamp
+        
+        # Get validated timestamp using TimeManager
+        if timestamp is None:
+            validated_timestamp = self.time_manager.current_timestamp('ms')
+        else:
+            validated_timestamp = self.time_manager.validate_timestamp(timestamp, time_unit)
+            
         for feature, value in _flatten_dict_data.items():
-            self.add(feature, value, timestamp)
+            self.add(feature, value, validated_timestamp, 'ms')
 
     @classmethod
     def from_list_of_dicts(
