@@ -6,9 +6,9 @@ import sys
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from fractions import Fraction
-from typing import Any, Dict, List, Optional, Text, cast, Union
-from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional, Text, Union, cast
 
 import av
 import h5py
@@ -21,6 +21,7 @@ from robodm.utils import recursively_read_hdf5_group
 logger = logging.getLogger(__name__)
 
 logging.getLogger("libav").setLevel(logging.CRITICAL)
+
 
 def _flatten_dict(d, parent_key="", sep="_"):
     items = []
@@ -36,38 +37,40 @@ def _flatten_dict(d, parent_key="", sep="_"):
 class TimeManager:
     """
     Comprehensive time management system for robodm trajectories.
-    
+
     Handles:
     - Multiple time units (nanoseconds, microseconds, milliseconds, seconds)
-    - Base datetime reference points  
+    - Base datetime reference points
     - Monotonic timestamp enforcement
     - Unit conversions
     - Per-timestep timing from base datetime
     """
-    
+
     # Time unit conversion factors to nanoseconds
     TIME_UNITS = {
-        'ns': 1,
-        'nanoseconds': 1,
-        'μs': 1_000,
-        'us': 1_000,
-        'microseconds': 1_000,
-        'ms': 1_000_000,
-        'milliseconds': 1_000_000,
-        's': 1_000_000_000,
-        'seconds': 1_000_000_000,
+        "ns": 1,
+        "nanoseconds": 1,
+        "μs": 1_000,
+        "us": 1_000,
+        "microseconds": 1_000,
+        "ms": 1_000_000,
+        "milliseconds": 1_000_000,
+        "s": 1_000_000_000,
+        "seconds": 1_000_000_000,
     }
-    
+
     # Trajectory time base (for robodm compatibility)
     TRAJECTORY_TIME_BASE = Fraction(1, 1000)  # milliseconds
-    
-    def __init__(self, 
-                 base_datetime: Optional[datetime] = None,
-                 time_unit: str = 'ms',
-                 enforce_monotonic: bool = True):
+
+    def __init__(
+        self,
+        base_datetime: Optional[datetime] = None,
+        time_unit: str = "ms",
+        enforce_monotonic: bool = True,
+    ):
         """
         Initialize TimeManager.
-        
+
         Parameters:
         -----------
         base_datetime : datetime, optional
@@ -80,32 +83,32 @@ class TimeManager:
         self.base_datetime = base_datetime or datetime.now(timezone.utc)
         self.time_unit = time_unit
         self.enforce_monotonic = enforce_monotonic
-        
+
         # Internal state
         self._last_timestamp_ns = 0
         self._start_time = time.time()
-        
+
         # Validate time unit
         if time_unit not in self.TIME_UNITS:
             raise ValueError(f"Unsupported time unit: {time_unit}. "
-                           f"Supported: {list(self.TIME_UNITS.keys())}")
-    
+                             f"Supported: {list(self.TIME_UNITS.keys())}")
+
     def reset(self, base_datetime: Optional[datetime] = None):
         """Reset the time manager with new base datetime."""
         if base_datetime:
             self.base_datetime = base_datetime
         self._last_timestamp_ns = 0
         self._start_time = time.time()
-    
+
     def current_timestamp(self, unit: Optional[str] = None) -> int:
         """
         Get current timestamp relative to start time.
-        
+
         Parameters:
         -----------
         unit : str, optional
             Time unit for returned timestamp. If None, uses default unit.
-            
+
         Returns:
         --------
         int : Current timestamp in specified unit
@@ -113,18 +116,20 @@ class TimeManager:
         unit = unit or self.time_unit
         current_time_ns = int((time.time() - self._start_time) * 1_000_000_000)
         return self.convert_from_nanoseconds(current_time_ns, unit)
-    
-    def datetime_to_timestamp(self, dt: datetime, unit: Optional[str] = None) -> int:
+
+    def datetime_to_timestamp(self,
+                              dt: datetime,
+                              unit: Optional[str] = None) -> int:
         """
         Convert datetime to timestamp relative to base_datetime.
-        
+
         Parameters:
         -----------
         dt : datetime
             Datetime to convert
         unit : str, optional
             Target time unit. If None, uses default unit.
-            
+
         Returns:
         --------
         int : Timestamp in specified unit
@@ -136,22 +141,24 @@ class TimeManager:
             base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
         else:
             base_dt = self.base_datetime
-            
+
         delta_seconds = (dt - base_dt).total_seconds()
         delta_ns = int(delta_seconds * 1_000_000_000)
         return self.convert_from_nanoseconds(delta_ns, unit)
-    
-    def timestamp_to_datetime(self, timestamp: int, unit: Optional[str] = None) -> datetime:
+
+    def timestamp_to_datetime(self,
+                              timestamp: int,
+                              unit: Optional[str] = None) -> datetime:
         """
         Convert timestamp to datetime using base_datetime as reference.
-        
+
         Parameters:
         -----------
         timestamp : int
             Timestamp value
         unit : str, optional
             Time unit of input timestamp. If None, uses default unit.
-            
+
         Returns:
         --------
         datetime : Corresponding datetime
@@ -159,72 +166,80 @@ class TimeManager:
         unit = unit or self.time_unit
         timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
         delta_seconds = timestamp_ns / 1_000_000_000
-        
+
         if self.base_datetime.tzinfo is None:
             base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
         else:
             base_dt = self.base_datetime
-            
+
         return base_dt + timedelta(seconds=delta_seconds)
-    
-    def convert_to_nanoseconds(self, timestamp: Union[int, float], unit: str) -> int:
+
+    def convert_to_nanoseconds(self, timestamp: Union[int, float],
+                               unit: str) -> int:
         """Convert timestamp from given unit to nanoseconds."""
         if unit not in self.TIME_UNITS:
             raise ValueError(f"Unsupported time unit: {unit}")
         return int(timestamp * self.TIME_UNITS[unit])
-    
+
     def convert_from_nanoseconds(self, timestamp_ns: int, unit: str) -> int:
         """Convert timestamp from nanoseconds to given unit."""
         if unit not in self.TIME_UNITS:
             raise ValueError(f"Unsupported time unit: {unit}")
         return int(timestamp_ns // self.TIME_UNITS[unit])
-    
-    def convert_units(self, timestamp: Union[int, float], 
-                     from_unit: str, to_unit: str) -> int:
+
+    def convert_units(self, timestamp: Union[int, float], from_unit: str,
+                      to_unit: str) -> int:
         """Convert timestamp between different units."""
         timestamp_ns = self.convert_to_nanoseconds(timestamp, from_unit)
         return self.convert_from_nanoseconds(timestamp_ns, to_unit)
-    
-    def validate_timestamp(self, timestamp: int, unit: Optional[str] = None) -> int:
+
+    def validate_timestamp(self,
+                           timestamp: int,
+                           unit: Optional[str] = None) -> int:
         """
         Validate and potentially adjust timestamp for monotonic ordering.
-        
+
         Parameters:
         -----------
         timestamp : int
             Input timestamp
         unit : str, optional
             Time unit of input timestamp
-            
+
         Returns:
         --------
         int : Validated timestamp in trajectory time base units (milliseconds)
         """
         unit = unit or self.time_unit
         timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
-        
+
         if self.enforce_monotonic:
             if timestamp_ns <= self._last_timestamp_ns:
                 # Adjust to maintain monotonic ordering - add 1ms worth of nanoseconds to ensure difference
-                timestamp_ns = self._last_timestamp_ns + 1_000_000  # +1ms in nanoseconds
-                logger.debug(f"Adjusted timestamp to maintain monotonic ordering: {timestamp_ns} ns")
-            
+                timestamp_ns = (self._last_timestamp_ns + 1_000_000
+                                )  # +1ms in nanoseconds
+                logger.debug(
+                    f"Adjusted timestamp to maintain monotonic ordering: {timestamp_ns} ns"
+                )
+
             self._last_timestamp_ns = timestamp_ns
-        
+
         # Convert to trajectory time base (milliseconds)
-        return self.convert_from_nanoseconds(timestamp_ns, 'ms')
-    
-    def add_timestep(self, timestep: Union[int, float], unit: Optional[str] = None) -> int:
+        return self.convert_from_nanoseconds(timestamp_ns, "ms")
+
+    def add_timestep(self,
+                     timestep: Union[int, float],
+                     unit: Optional[str] = None) -> int:
         """
         Add a timestep to the last timestamp and return trajectory-compatible timestamp.
-        
+
         Parameters:
         -----------
         timestep : int or float
             Time step to add
         unit : str, optional
             Time unit of timestep
-            
+
         Returns:
         --------
         int : New timestamp in trajectory time base units (milliseconds)
@@ -232,17 +247,20 @@ class TimeManager:
         unit = unit or self.time_unit
         timestep_ns = self.convert_to_nanoseconds(timestep, unit)
         new_timestamp_ns = self._last_timestamp_ns + timestep_ns
-        
+
         self._last_timestamp_ns = new_timestamp_ns
-        return self.convert_from_nanoseconds(new_timestamp_ns, 'ms')
-    
-    def create_timestamp_sequence(self, start_timestamp: int, 
-                                count: int, 
-                                timestep: Union[int, float],
-                                unit: Optional[str] = None) -> List[int]:
+        return self.convert_from_nanoseconds(new_timestamp_ns, "ms")
+
+    def create_timestamp_sequence(
+        self,
+        start_timestamp: int,
+        count: int,
+        timestep: Union[int, float],
+        unit: Optional[str] = None,
+    ) -> List[int]:
         """
         Create a sequence of monotonic timestamps.
-        
+
         Parameters:
         -----------
         start_timestamp : int
@@ -253,7 +271,7 @@ class TimeManager:
             Time step between consecutive timestamps
         unit : str, optional
             Time unit for inputs
-            
+
         Returns:
         --------
         List[int] : List of timestamps in trajectory time base units
@@ -261,23 +279,23 @@ class TimeManager:
         unit = unit or self.time_unit
         start_ns = self.convert_to_nanoseconds(start_timestamp, unit)
         timestep_ns = self.convert_to_nanoseconds(timestep, unit)
-        
+
         timestamps = []
         current_ns = start_ns
-        
+
         for i in range(count):
             # Ensure monotonic ordering if enforce_monotonic is True
             if self.enforce_monotonic and current_ns <= self._last_timestamp_ns:
                 current_ns = self._last_timestamp_ns + 1_000_000  # +1ms in nanoseconds
-            
-            timestamps.append(self.convert_from_nanoseconds(current_ns, 'ms'))
-            
+
+            timestamps.append(self.convert_from_nanoseconds(current_ns, "ms"))
+
             # Update last timestamp only if monotonic enforcement is enabled
             if self.enforce_monotonic:
                 self._last_timestamp_ns = current_ns
-                
+
             current_ns += timestep_ns
-            
+
         return timestamps
 
 
@@ -455,7 +473,7 @@ class Trajectory(TrajectoryInterface):
         self.time_manager = TimeManager(
             base_datetime=base_datetime,
             time_unit=time_unit,
-            enforce_monotonic=enforce_monotonic
+            enforce_monotonic=enforce_monotonic,
         )
 
         self.feature_name_to_stream: Dict[str,
@@ -605,7 +623,9 @@ class Trajectory(TrajectoryInterface):
 
         # Ensure file exists even if empty - the container file should create it
         if not self._exists(self.path):
-            logger.warning(f"Container file was closed but {self.path} doesn't exist. This might indicate an issue.")
+            logger.warning(
+                f"Container file was closed but {self.path} doesn't exist. This might indicate an issue."
+            )
 
         # Only attempt transcoding if file exists, has content, and compact is requested
         if (compact and has_data and self._exists(self.path)
@@ -640,15 +660,15 @@ class Trajectory(TrajectoryInterface):
         Parameters
         ----------
         return_type : {"numpy", "container"}, default "numpy"
-            • "numpy"     – decode the data and return a dict[str, np.ndarray]  
-            • "container" – skip all decoding and just return the file path  
+            • "numpy"     – decode the data and return a dict[str, np.ndarray]
+            • "container" – skip all decoding and just return the file path
         desired_frequency : float | None, default None
             Target sampling frequency **in hertz**.  If None, every frame is
             returned (subject to `data_slice`). For upsampling (when desired
             frequency is higher than original), prior frames are duplicated
             to fill temporal gaps. For downsampling, frames are skipped.
         data_slice : slice | None, default None
-            Standard Python slice that is applied *after* resampling.  
+            Standard Python slice that is applied *after* resampling.
             Example: `slice(100, 200, 2)` → keep resampled indices 100-199,
             step 2.  Negative indices and reverse slices are **not** supported.
 
@@ -656,7 +676,7 @@ class Trajectory(TrajectoryInterface):
         -----
         * Resampling is performed individually for every feature stream.
         * For upsampling: when time gaps between consecutive frames exceed
-          the desired period, the prior frame is duplicated at regular 
+          the desired period, the prior frame is duplicated at regular
           intervals to achieve the target frequency.
         * For downsampling: frames that arrive too close together (within
           the desired period) are skipped.
@@ -668,8 +688,10 @@ class Trajectory(TrajectoryInterface):
           corresponding timestamp to avoid decoding frames that will be thrown
           away anyway.
         """
-        logger.debug(f"load() called with return_type='{return_type}', desired_frequency={desired_frequency}, data_slice={data_slice}")
-        
+        logger.debug(
+            f"load() called with return_type='{return_type}', desired_frequency={desired_frequency}, data_slice={data_slice}"
+        )
+
         # ------------------------------------------------------------------ #
         # Fast-path: user only wants the container path
         # ------------------------------------------------------------------ #
@@ -683,23 +705,27 @@ class Trajectory(TrajectoryInterface):
         # Validate / canonicalise the slice object
         # ------------------------------------------------------------------ #
         if data_slice is None:
-            logger.debug("No data_slice provided, using default slice(None, None, None)")
+            logger.debug(
+                "No data_slice provided, using default slice(None, None, None)"
+            )
             data_slice = slice(None, None, None)
         else:
             logger.debug(f"Using provided data_slice: {data_slice}")
-            
+
         if data_slice.step not in (None, 1) and data_slice.step <= 0:
             raise ValueError("Reverse or zero-step slices are not supported")
-        
+
         # Check for negative start - this should raise an error
         if data_slice.start is not None and data_slice.start < 0:
             raise ValueError("Negative slice start values are not supported")
-        
+
         sl_start = 0 if data_slice.start is None else max(data_slice.start, 0)
-        sl_stop  = data_slice.stop              # can be None
-        sl_step  = 1 if data_slice.step is None else data_slice.step
-        
-        logger.debug(f"Canonicalized slice parameters: start={sl_start}, stop={sl_stop}, step={sl_step}")
+        sl_stop = data_slice.stop  # can be None
+        sl_step = 1 if data_slice.step is None else data_slice.step
+
+        logger.debug(
+            f"Canonicalized slice parameters: start={sl_start}, stop={sl_stop}, step={sl_step}"
+        )
 
         # ------------------------------------------------------------------ #
         # Frequency → minimum period in stream time-base units (milliseconds)
@@ -709,7 +735,9 @@ class Trajectory(TrajectoryInterface):
             if desired_frequency <= 0:
                 raise ValueError("desired_frequency must be positive")
             period_ms = int(round(1000.0 / desired_frequency))
-            logger.debug(f"Frequency resampling enabled: {desired_frequency} Hz -> period_ms={period_ms}")
+            logger.debug(
+                f"Frequency resampling enabled: {desired_frequency} Hz -> period_ms={period_ms}"
+            )
         else:
             logger.debug("No frequency resampling (desired_frequency is None)")
 
@@ -718,8 +746,8 @@ class Trajectory(TrajectoryInterface):
         # ------------------------------------------------------------------ #
         logger.debug(f"Opening container file: {self.path}")
         container = av.open(self.path, mode="r", format="matroska")
-        streams   = list(container.streams)
-        
+        streams = list(container.streams)
+
         logger.debug(f"Container opened with {len(streams)} streams")
 
         # Handle empty trajectory case
@@ -731,7 +759,7 @@ class Trajectory(TrajectoryInterface):
         # Track if we performed seeking to adjust slice logic
         seek_performed = False
         seek_offset_frames = 0
-        
+
         # Use seeking optimization when we have slicing
         if sl_start > 0 and streams:
             if period_ms is not None:
@@ -741,59 +769,74 @@ class Trajectory(TrajectoryInterface):
                 # resampled frame corresponds to timestamp: sl_start * period_ms
                 seek_ts_ms = sl_start * period_ms
                 seek_offset_frames = sl_start
-                logger.debug(f"Seeking with frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}")
+                logger.debug(
+                    f"Seeking with frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}"
+                )
             else:
                 # If only slicing (no frequency resampling), seek to the sl_start-th frame
                 # assuming original 100ms intervals (10Hz from our test data)
                 seek_ts_ms = sl_start * 100
                 seek_offset_frames = sl_start
-                logger.debug(f"Seeking without frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}")
-            
+                logger.debug(
+                    f"Seeking without frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}"
+                )
+
             # Seek using the first stream's time_base (which is 1/1000, so offset is in ms)
             try:
-                logger.debug(f"Attempting to seek to timestamp {seek_ts_ms} on stream {streams[0]}")
+                logger.debug(
+                    f"Attempting to seek to timestamp {seek_ts_ms} on stream {streams[0]}"
+                )
                 container.seek(seek_ts_ms, stream=streams[0], any_frame=True)
                 seek_performed = True
                 logger.debug("Seek successful")
             except av.AVError as e:
                 # Seeking failed (e.g. single large packet stream) – fall back
                 # to decoding from the beginning.
-                logger.debug(f"Seeking failed ({e}), falling back to decoding from beginning")
+                logger.debug(
+                    f"Seeking failed ({e}), falling back to decoding from beginning"
+                )
                 seek_performed = False
                 seek_offset_frames = 0
         else:
-            logger.debug("No seeking optimization needed (sl_start=0 or no streams)")
+            logger.debug(
+                "No seeking optimization needed (sl_start=0 or no streams)")
 
         # ------------------------------------------------------------------ #
         # Book-keeping structures
         # ------------------------------------------------------------------ #
-        cache: dict[str, list[Any]]      = {}
+        cache: dict[str, list[Any]] = {}
         last_pts: dict[str, Optional[int]] = {}
-        kept_idx: dict[str, int]         = {}
-        done: set[str]                   = set()
+        kept_idx: dict[str, int] = {}
+        done: set[str] = set()
 
         stream_count = 0
         for s in streams:
             fname = s.metadata.get("FEATURE_NAME")
             ftype = s.metadata.get("FEATURE_TYPE")
             if not (fname and ftype):
-                logger.debug(f"Skipping stream {s} without FEATURE_NAME or FEATURE_TYPE metadata")
+                logger.debug(
+                    f"Skipping stream {s} without FEATURE_NAME or FEATURE_TYPE metadata"
+                )
                 continue
             cache[fname] = []
             last_pts[fname] = None
             # If we seeked, start counting from the seek offset minus 1
             # (since kept_idx gets incremented before checking)
             kept_idx[fname] = seek_offset_frames - 1 if seek_performed else -1
-            self.feature_name_to_feature_type[fname] = FeatureType.from_str(ftype)
+            self.feature_name_to_feature_type[fname] = FeatureType.from_str(
+                ftype)
             stream_count += 1
-            logger.debug(f"Initialized feature '{fname}' with type {ftype}, kept_idx={kept_idx[fname]}")
+            logger.debug(
+                f"Initialized feature '{fname}' with type {ftype}, kept_idx={kept_idx[fname]}"
+            )
 
         # Handle case where no valid streams were found
         if not cache:
-            logger.debug("No valid feature streams found, returning empty dict")
+            logger.debug(
+                "No valid feature streams found, returning empty dict")
             container.close()
             return {}
-            
+
         logger.debug(f"Processing {stream_count} feature streams")
 
         # ------------------------------------------------------------------ #
@@ -816,7 +859,7 @@ class Trajectory(TrajectoryInterface):
         skipped_slice = 0
         decoded_packets = 0
         upsampled_frames = 0
-        
+
         for packet in container.demux(streams):
             packet_count += 1
             fname = packet.stream.metadata.get("FEATURE_NAME")
@@ -827,7 +870,8 @@ class Trajectory(TrajectoryInterface):
             # (e.g. after a flush or if the stream has no real data).  They
             # must be skipped before any timing logic.
             if packet.pts is None:
-                logger.debug(f"Skipping packet with None pts for feature '{fname}'")
+                logger.debug(
+                    f"Skipping packet with None pts for feature '{fname}'")
                 continue
 
             processed_packets += 1
@@ -838,63 +882,81 @@ class Trajectory(TrajectoryInterface):
                 # Guard both operands – pts is now guaranteed not-None.
                 if lp is not None:
                     time_gap = packet.pts - lp
-                    
+
                     if time_gap < period_ms:
                         # Downsampling: skip this frame
                         skipped_frequency += 1
-                        logger.debug(f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+                        logger.debug(
+                            f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}"
+                        )
                         continue
                     elif time_gap > period_ms and cache[fname]:
                         # Upsampling: insert duplicate frames before processing current frame
                         # Calculate how many intermediate frames we need
-                        num_intermediate_frames = int(time_gap // period_ms) - 1
-                        
+                        num_intermediate_frames = int(
+                            time_gap // period_ms) - 1
+
                         if num_intermediate_frames > 0:
                             # Get the last frame data for duplication
                             last_frame_data = cache[fname][-1]
-                            
+
                             # Insert intermediate frames
                             for i in range(1, num_intermediate_frames + 1):
                                 kept_idx[fname] += 1
-                                
+
                                 if want(kept_idx[fname]):
                                     cache[fname].append(last_frame_data)
                                     upsampled_frames += 1
-                                    logger.debug(f"Inserted duplicate frame for '{fname}' at intermediate position {i}/{num_intermediate_frames}, kept_idx={kept_idx[fname]}")
-                    
-                    logger.debug(f"Keeping packet for '{fname}' after frequency check: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}")
+                                    logger.debug(
+                                        f"Inserted duplicate frame for '{fname}' at intermediate position {i}/{num_intermediate_frames}, kept_idx={kept_idx[fname]}"
+                                    )
+
+                    logger.debug(
+                        f"Keeping packet for '{fname}' after frequency check: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}"
+                    )
                 else:
-                    logger.debug(f"First packet for '{fname}', no upsampling needed: pts={packet.pts}")
+                    logger.debug(
+                        f"First packet for '{fname}', no upsampling needed: pts={packet.pts}"
+                    )
             else:
-                logger.debug(f"No frequency resampling for '{fname}': period_ms is None")
+                logger.debug(
+                    f"No frequency resampling for '{fname}': period_ms is None"
+                )
 
             # This packet is being kept at the resampling stage
             kept_idx[fname] += 1
             # Only update last_pts if this packet has a usable pts
             last_pts[fname] = packet.pts
 
-            if not want(kept_idx[fname]):              # slice filter
+            if not want(kept_idx[fname]):  # slice filter
                 skipped_slice += 1
-                logger.debug(f"Skipping packet for '{fname}' due to slice filter: kept_idx={kept_idx[fname]}")
+                logger.debug(
+                    f"Skipping packet for '{fname}' due to slice filter: kept_idx={kept_idx[fname]}"
+                )
                 continue
 
-            logger.debug(f"Decoding packet for '{fname}': kept_idx={kept_idx[fname]}, pts={packet.pts}")
+            logger.debug(
+                f"Decoding packet for '{fname}': kept_idx={kept_idx[fname]}, pts={packet.pts}"
+            )
 
             # --- decode on demand only ------------------------------------
             codec = packet.stream.codec_context.codec.name
             if codec == "rawvideo":
                 raw = bytes(packet)
-                if not raw:                 # zero-length placeholder
-                    logger.debug(f"Skipping empty rawvideo packet for '{fname}'")
+                if not raw:  # zero-length placeholder
+                    logger.debug(
+                        f"Skipping empty rawvideo packet for '{fname}'")
                     continue
                 cache[fname].append(pickle.loads(raw))
                 decoded_packets += 1
-                logger.debug(f"Decoded rawvideo packet for '{fname}' (pickled data)")
+                logger.debug(
+                    f"Decoded rawvideo packet for '{fname}' (pickled data)")
             else:
                 for frame in packet.decode():
                     ft = self.feature_name_to_feature_type[fname]
                     if ft.dtype == "float32":
-                        arr = frame.to_ndarray(format="gray")   # depth / float32
+                        arr = frame.to_ndarray(
+                            format="gray")  # depth / float32
                         if ft.shape:
                             arr = arr.reshape(ft.shape)
                     else:
@@ -903,14 +965,19 @@ class Trajectory(TrajectoryInterface):
                             arr = arr.reshape(ft.shape)
                     cache[fname].append(arr)
                     decoded_packets += 1
-                    logger.debug(f"Decoded {codec} frame for '{fname}': shape={arr.shape}, dtype={arr.dtype}")
+                    logger.debug(
+                        f"Decoded {codec} frame for '{fname}': shape={arr.shape}, dtype={arr.dtype}"
+                    )
 
             # Early exit: all streams finished their slice
             if sl_stop is not None and kept_idx[fname] >= sl_stop:
                 done.add(fname)
-                logger.debug(f"Feature '{fname}' reached slice stop ({sl_stop}), marking as done")
+                logger.debug(
+                    f"Feature '{fname}' reached slice stop ({sl_stop}), marking as done"
+                )
                 if len(done) == len(cache):
-                    logger.debug("All features completed their slices, breaking early")
+                    logger.debug(
+                        "All features completed their slices, breaking early")
                     break
 
         # ------------------------------------------------------------------ #
@@ -921,12 +988,14 @@ class Trajectory(TrajectoryInterface):
             if not fname or fname not in cache:
                 continue
             if s.codec_context.codec.name == "rawvideo":
-                continue                      # pickled streams have no buffer
+                continue  # pickled streams have no buffer
 
             # Passing None tells PyAV/FFmpeg "end of stream – give me leftovers"
-            for frame in s.decode(None):      # PyAV ≥ 10; on ≤ 0.5 use s.codec_context.decode(None)
+            for frame in s.decode(
+                    None
+            ):  # PyAV ≥ 10; on ≤ 0.5 use s.codec_context.decode(None)
                 kept_idx[fname] += 1
-                if not want(kept_idx[fname]):     # honour slice filter
+                if not want(kept_idx[fname]):  # honour slice filter
                     continue
 
                 ft = self.feature_name_to_feature_type[fname]
@@ -940,9 +1009,11 @@ class Trajectory(TrajectoryInterface):
                 decoded_packets += 1
 
         container.close()
-        
-        logger.debug(f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
-                    f"skipped_frequency={skipped_frequency}, skipped_slice={skipped_slice}, decoded={decoded_packets}, upsampled_frames={upsampled_frames}")
+
+        logger.debug(
+            f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
+            f"skipped_frequency={skipped_frequency}, skipped_slice={skipped_slice}, decoded={decoded_packets}, upsampled_frames={upsampled_frames}"
+        )
 
         # ------------------------------------------------------------------ #
         # Convert to numpy arrays
@@ -955,16 +1026,21 @@ class Trajectory(TrajectoryInterface):
                 logger.debug(f"Warning: '{fname}' has no data after filtering")
                 out[fname] = np.array([])
                 continue
-                
+
             ft = self.feature_name_to_feature_type[fname]
             if ft.dtype in ["string", "str"]:
                 out[fname] = np.array(lst, dtype=object)
-                logger.debug(f"Created object array for '{fname}': shape={out[fname].shape}")
+                logger.debug(
+                    f"Created object array for '{fname}': shape={out[fname].shape}"
+                )
             else:
                 out[fname] = np.asarray(lst, dtype=ft.dtype)
-                logger.debug(f"Created {ft.dtype} array for '{fname}': shape={out[fname].shape}")
+                logger.debug(
+                    f"Created {ft.dtype} array for '{fname}': shape={out[fname].shape}"
+                )
 
-        logger.debug(f"load() returning {len(out)} features: {list(out.keys())}")
+        logger.debug(
+            f"load() returning {len(out)} features: {list(out.keys())}")
         return out
 
     def init_feature_streams(self, feature_spec: Dict):
@@ -1037,11 +1113,13 @@ class Trajectory(TrajectoryInterface):
 
         # get the timestamp using TimeManager
         if timestamp is None:
-            validated_timestamp = self.time_manager.current_timestamp('ms')
+            validated_timestamp = self.time_manager.current_timestamp("ms")
         else:
-            validated_timestamp = self.time_manager.validate_timestamp(timestamp, time_unit)
+            validated_timestamp = self.time_manager.validate_timestamp(
+                timestamp, time_unit)
 
-        logger.debug(f"Encoding frame with validated timestamp: {validated_timestamp}")
+        logger.debug(
+            f"Encoding frame with validated timestamp: {validated_timestamp}")
         # encode the frame
         packets = self._encode_frame(data, stream, validated_timestamp)
         logger.debug(f"Generated {len(packets)} packets")
@@ -1084,15 +1162,16 @@ class Trajectory(TrajectoryInterface):
 
         _flatten_dict_data = _flatten_dict(data,
                                            sep=self.feature_name_separator)
-        
+
         # Get validated timestamp using TimeManager
         if timestamp is None:
-            validated_timestamp = self.time_manager.current_timestamp('ms')
+            validated_timestamp = self.time_manager.current_timestamp("ms")
         else:
-            validated_timestamp = self.time_manager.validate_timestamp(timestamp, time_unit)
-            
+            validated_timestamp = self.time_manager.validate_timestamp(
+                timestamp, time_unit)
+
         for feature, value in _flatten_dict_data.items():
-            self.add(feature, value, validated_timestamp, 'ms')
+            self.add(feature, value, validated_timestamp, "ms")
 
     @classmethod
     def from_list_of_dicts(

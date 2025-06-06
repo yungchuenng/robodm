@@ -80,7 +80,7 @@ def create_trajectory(
         enforce_monotonic: Whether to enforce monotonically increasing timestamps
     """
     from .trajectory import Trajectory
-    
+
     # Call Trajectory constructor directly since the factory doesn't support time parameters yet
     return Trajectory(
         path=path,
