@@ -377,8 +377,8 @@ class TestOpenXTrajectoryIntegration:
         print("=" * 60)
 
         # Ensure at least one codec works with OpenX data
-        assert (len(available_codecs) >
-                0), "No codecs are available for Open X-Embodiment data!"
+        assert (len(available_codecs)
+                > 0), "No codecs are available for Open X-Embodiment data!"
 
 
 class TestRLDSLoaderIntegration:
@@ -1702,8 +1702,8 @@ class TestOpenXFormatComparison:
 
         # Ensure file sizes are reasonable (not empty, not too large)
         for format_name, metrics in successful_formats.items():
-            assert (metrics["file_size_mb"] >
-                    0), f"{format_name} file should not be empty"
+            assert (metrics["file_size_mb"]
+                    > 0), f"{format_name} file should not be empty"
             assert (metrics["file_size_mb"] < original_size_mb *
                     10), f"{format_name} file suspiciously large"
 
@@ -2760,8 +2760,8 @@ class TestOpenXLoaderBenchmark:
                                             f"  💾 {fmt2} is {1/size_ratio:.2f}x more compact than {fmt1}"
                                         )
 
-        assert (len(scalability_results) >
-                0), "At least one scalability test should succeed"
+        assert (len(scalability_results)
+                > 0), "At least one scalability test should succeed"
 
         # Test scalability characteristics
         for format_name in formats:

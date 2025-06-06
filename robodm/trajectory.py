@@ -8,7 +8,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from fractions import Fraction
-from typing import Any, Dict, List, Optional, Text, Union, cast
+from typing import Any, Dict, List, Optional, Text, Tuple, Union, cast
 
 import av
 import h5py
@@ -316,6 +316,69 @@ class StreamInfo:
 class CodecConfig:
     """Configuration class for video codec settings."""
 
+    @staticmethod
+    def get_supported_pixel_formats(codec_name: str) -> List[str]:
+        """Get list of supported pixel formats for a codec."""
+        try:
+            import av
+
+            codec = av.codec.Codec(codec_name, "w")
+            if codec.video_formats:
+                return [vf.name for vf in codec.video_formats]
+            return []
+        except Exception:
+            return []
+
+    @staticmethod
+    def is_codec_config_supported(width: int,
+                                  height: int,
+                                  pix_fmt: str = "yuv420p",
+                                  codec_name: str = "libx264") -> bool:
+        """Check if a specific width/height/pixel format combination is supported by codec."""
+        try:
+            from fractions import Fraction
+
+            import av
+
+            cc = av.codec.CodecContext.create(codec_name, "w")
+            cc.width = width
+            cc.height = height
+            cc.pix_fmt = pix_fmt
+            cc.time_base = Fraction(1, 30)
+            cc.open(strict=True)
+            cc.close()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def is_valid_image_shape(shape: Tuple[int, ...],
+                             codec_name: str = "libx264") -> bool:
+        """Check if a shape can be treated as an RGB image for the given codec."""
+        # Only accept RGB shapes (H, W, 3)
+        if len(shape) != 3 or shape[2] != 3:
+            return False
+
+        height, width = shape[0], shape[1]
+
+        # Check minimum reasonable image size
+        if height < 1 or width < 1:
+            return False
+
+        # Check codec-specific constraints
+        if codec_name in ["libx264", "libx265"]:
+            # H.264/H.265 require even dimensions
+            if height % 2 != 0 or width % 2 != 0:
+                return False
+        elif codec_name in ["libaom-av1"]:
+            # AV1 also typically requires even dimensions for yuv420p
+            if height % 2 != 0 or width % 2 != 0:
+                return False
+
+        # Test if the codec actually supports this resolution
+        return CodecConfig.is_codec_config_supported(width, height, "yuv420p",
+                                                     codec_name)
+
     # Default codec configurations
     CODEC_CONFIGS = {
         "rawvideo": {
@@ -371,17 +434,46 @@ class CodecConfig:
     def get_codec_for_feature(self, feature_type: FeatureType) -> str:
         """Determine the appropriate codec for a given feature type."""
 
-        # Auto-selection logic based on feature characteristics
         data_shape = feature_type.shape
-        if (data_shape is not None and len(data_shape) >= 2
-                and data_shape[0] >= 100 and data_shape[1] >= 100):
-            # Large images - use efficient video codec
+
+        # Only use video codecs for RGB images (H, W, 3)
+        if data_shape is not None and len(
+                data_shape) == 3 and data_shape[2] == 3:
+            height, width = data_shape[0], data_shape[1]
+
+            # If user specified a codec other than auto, try to use it for RGB images
             if self.codec != "auto":
-                return self.codec
-            return "libaom-av1"  # Default to AV1 for large images
+                if self.is_valid_image_shape(data_shape, self.codec):
+                    logger.debug(
+                        f"Using user-specified codec {self.codec} for RGB shape {data_shape}"
+                    )
+                    return self.codec
+                else:
+                    logger.warning(
+                        f"User-specified codec {self.codec} doesn't support shape {data_shape}, falling back to rawvideo"
+                    )
+                    return "rawvideo"
+
+            # Auto-selection for RGB images only
+            codec_preferences = ["libaom-av1", "ffv1", "libx264", "libx265"]
+
+            for codec in codec_preferences:
+                if self.is_valid_image_shape(data_shape, codec):
+                    logger.debug(
+                        f"Selected codec {codec} for RGB shape {data_shape}")
+                    return codec
+
+            # If no video codec works for this RGB image, fall back to rawvideo
+            logger.warning(
+                f"No video codec supports RGB shape {data_shape}, falling back to rawvideo"
+            )
+
         else:
-            # Small data or non-image data - use rawvideo
-            return "rawvideo"
+            # Non-RGB data (grayscale, depth, vectors, etc.) always use rawvideo
+            if data_shape is not None:
+                logger.debug(f"Using rawvideo for non-RGB shape {data_shape}")
+
+        return "rawvideo"
 
     def get_pixel_format(self, codec: str,
                          feature_type: FeatureType) -> Optional[str]:
@@ -394,19 +486,16 @@ class CodecConfig:
         if base_format is None:  # rawvideo case
             return None
 
-        # Adjust pixel format based on feature type
+        # Only use RGB formats for actual RGB data (H, W, 3)
         shape = feature_type.shape
         if shape is not None and len(shape) == 3 and shape[2] == 3:
-            # RGB image
+            # RGB data - use appropriate RGB format
             return ("yuv420p" if codec in [
                 "libx264", "libx265", "libaom-av1", "ffv1"
             ] else "rgb24")
-        elif shape is not None and (len(shape) == 2 or
-                                    (len(shape) == 3 and shape[2] == 1)):
-            # Grayscale image
-            return "gray"
         else:
-            return base_format
+            # Non-RGB data should not get video pixel formats
+            return None
 
     def get_codec_options(self, codec: str) -> Dict[str, Any]:
         """Get codec options, merging defaults with custom options."""
@@ -478,16 +567,16 @@ class Trajectory(TrajectoryInterface):
 
         self.feature_name_to_stream: Dict[str,
                                           Any] = {}  # feature_name: stream
-        self.feature_name_to_feature_type: Dict[str, FeatureType] = {
-        }  # feature_name: feature_type
+        self.feature_name_to_feature_type: Dict[str, FeatureType] = (
+            {})  # feature_name: feature_type
         self.trajectory_data = None  # trajectory_data
         self.start_time = self._time()
         self.mode = mode
         self.stream_id_to_info: Dict[int,
                                      StreamInfo] = {}  # stream_id: StreamInfo
         self.is_closed = False
-        self.pending_write_tasks: List[Any] = [
-        ]  # List to keep track of pending write tasks
+        self.pending_write_tasks: List[Any] = (
+            [])  # List to keep track of pending write tasks
         self.container_file: Optional[Any] = None  # av.OutputContainer or None
 
         # check if the path exists
@@ -954,15 +1043,20 @@ class Trajectory(TrajectoryInterface):
             else:
                 for frame in packet.decode():
                     ft = self.feature_name_to_feature_type[fname]
-                    if ft.dtype == "float32":
-                        arr = frame.to_ndarray(
-                            format="gray")  # depth / float32
-                        if ft.shape:
-                            arr = arr.reshape(ft.shape)
-                    else:
+                    # Only decode as RGB24 for RGB data, otherwise this shouldn't happen
+                    # since non-RGB data should use rawvideo
+                    if ft.shape and len(ft.shape) == 3 and ft.shape[2] == 3:
+                        # RGB data - decode as RGB24
                         arr = frame.to_ndarray(format="rgb24")
-                        if ft.shape:
-                            arr = arr.reshape(ft.shape)
+                    else:
+                        # This shouldn't happen with our new logic, but handle gracefully
+                        logger.warning(
+                            f"Non-RGB data {fname} with shape {ft.shape} using video codec - this may cause issues"
+                        )
+                        arr = frame.to_ndarray(format="rgb24")
+
+                    if ft.shape:
+                        arr = arr.reshape(ft.shape)
                     cache[fname].append(arr)
                     decoded_packets += 1
                     logger.debug(
@@ -999,10 +1093,17 @@ class Trajectory(TrajectoryInterface):
                     continue
 
                 ft = self.feature_name_to_feature_type[fname]
-                if ft.dtype == "float32":
-                    arr = frame.to_ndarray(format="gray")
-                else:
+                # Only decode as RGB24 for RGB data
+                if ft.shape and len(ft.shape) == 3 and ft.shape[2] == 3:
+                    # RGB data - decode as RGB24
                     arr = frame.to_ndarray(format="rgb24")
+                else:
+                    # This shouldn't happen with our new logic, but handle gracefully
+                    logger.warning(
+                        f"Non-RGB data {fname} with shape {ft.shape} using video codec - this may cause issues"
+                    )
+                    arr = frame.to_ndarray(format="rgb24")
+
                 if ft.shape:
                     arr = arr.reshape(ft.shape)
                 cache[fname].append(arr)
@@ -1334,16 +1435,21 @@ class Trajectory(TrajectoryInterface):
             else:
                 frames = packet.decode()
                 for frame in frames:
-                    if feature_type.dtype == "float32":
-                        shape = feature_type.shape
+                    # Only decode as RGB24 for RGB data
+                    shape = feature_type.shape
+                    if shape and len(shape) == 3 and shape[2] == 3:
+                        # RGB data - decode as RGB24
                         if shape is not None:
                             data = frame.to_ndarray(  # type: ignore[attr-defined]
-                                format="gray").reshape(shape)
+                                format="rgb24").reshape(shape)
                         else:
                             data = frame.to_ndarray(
-                                format="gray")  # type: ignore[attr-defined]
+                                format="rgb24")  # type: ignore[attr-defined]
                     else:
-                        shape = feature_type.shape
+                        # This shouldn't happen with our new logic, but handle gracefully
+                        logger.warning(
+                            f"Non-RGB data {feature_name} with shape {shape} using video codec"
+                        )
                         if shape is not None:
                             data = frame.to_ndarray(  # type: ignore[attr-defined]
                                 format="rgb24").reshape(shape)
@@ -1433,8 +1539,8 @@ class Trajectory(TrajectoryInterface):
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
 
-                d_original_stream_id_to_new_container_stream[
-                    stream.index] = stream_in_updated_container
+                d_original_stream_id_to_new_container_stream[stream.index] = (
+                    stream_in_updated_container)
 
             # Transcode pickled images and add them to the new container
             packets_muxed = 0
@@ -1538,10 +1644,8 @@ class Trajectory(TrajectoryInterface):
         if (encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]
                 and shape is not None and len(shape) >= 2):
             logger.debug("Using video encoding path for image-like data")
-            if feature_type.dtype == "float32":
-                frame = self._create_frame_depth(data, stream)
-            else:
-                frame = self._create_frame(data, stream)
+            # Always use RGB frame creation, no special handling for float32
+            frame = self._create_frame(data, stream)
             frame.pts = timestamp
             frame.dts = timestamp
             frame.time_base = stream.time_base
@@ -1622,8 +1726,8 @@ class Trajectory(TrajectoryInterface):
                 # new_stream.options = stream.options
                 for key, value in stream.metadata.items():
                     stream_in_updated_container.metadata[key] = value
-                d_original_stream_id_to_new_container_stream[
-                    stream.index] = stream_in_updated_container
+                d_original_stream_id_to_new_container_stream[stream.index] = (
+                    stream_in_updated_container)
 
             # Add new feature stream
             new_stream = self._add_stream_to_container(new_container,
@@ -1685,28 +1789,40 @@ class Trajectory(TrajectoryInterface):
         return stream
 
     def _create_frame(self, image_array, stream):
-        image_array = np.array(image_array, dtype=np.uint8)
+        image_array = np.array(image_array)
         encoding = stream.codec_context.codec.name
 
-        # Determine the correct format based on array shape and codec
-        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
-            # RGB image
-            if encoding in ["libaom-av1", "ffv1", "libx264", "libx265"]:
-                # For video codecs that prefer YUV, convert RGB to YUV420p
-                frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
-                frame = frame.reformat(format="yuv420p")
+        # Convert to uint8 if needed
+        if image_array.dtype == np.float32:
+            # Assume float32 values are in [0, 1] range, scale to [0, 255]
+            image_array = np.clip(image_array * 255, 0, 255).astype(np.uint8)
+        elif image_array.dtype != np.uint8:
+            # Convert other dtypes to uint8
+            if np.issubdtype(image_array.dtype, np.integer):
+                # For integer types, clamp to 0-255 range
+                image_array = np.clip(image_array, 0, 255).astype(np.uint8)
             else:
-                frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
-        elif len(image_array.shape) == 3 and image_array.shape[2] == 1:
-            # Single channel image, squeeze the last dimension
-            frame = av.VideoFrame.from_ndarray(image_array.squeeze(axis=2),
-                                               format="gray")
-        elif len(image_array.shape) == 2:
-            # Grayscale image
-            frame = av.VideoFrame.from_ndarray(image_array, format="gray")
+                # For other types, normalize and convert
+                image_array = np.clip(image_array * 255, 0,
+                                      255).astype(np.uint8)
+
+        # Only handle RGB images (HxWx3) - no grayscale conversion
+        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
+            # RGB image - proceed with video encoding
+            pass
         else:
             raise ValueError(
-                f"Unsupported image array shape: {image_array.shape}")
+                f"Video codecs only support RGB images with shape (H, W, 3). "
+                f"Got shape {image_array.shape}. Use rawvideo encoding for other formats."
+            )
+
+        # Create RGB frame
+        if encoding in ["libaom-av1", "ffv1", "libx264", "libx265"]:
+            # For video codecs that prefer YUV, convert RGB to YUV420p
+            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
+            frame = frame.reformat(format="yuv420p")
+        else:
+            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
 
         frame.time_base = stream.time_base
         return frame

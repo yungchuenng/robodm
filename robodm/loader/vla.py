@@ -34,8 +34,9 @@ class SliceConfig:
     """Configuration for slice loading mode."""
 
     slice_length: int = 100  # Number of timesteps per slice
-    min_slice_length: Optional[
-        int] = None  # Minimum slice length (defaults to slice_length)
+    min_slice_length: Optional[int] = (
+        None  # Minimum slice length (defaults to slice_length)
+    )
     stride: int = 1  # Stride between consecutive timesteps in slice
     random_start: bool = True  # Whether to randomly sample start position
     overlap_ratio: float = 0.0  # Overlap ratio between consecutive slices (0.0-1.0)
