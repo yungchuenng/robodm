@@ -193,6 +193,22 @@ class TimeManager:
         timestamp_ns = self.convert_to_nanoseconds(timestamp, from_unit)
         return self.convert_from_nanoseconds(timestamp_ns, to_unit)
 
+    def get_last_timestamp(self, unit: Optional[str] = None) -> int:
+        """
+        Get the last timestamp that was used (validated).
+        
+        Parameters:
+        -----------
+        unit : str, optional
+            Time unit for returned timestamp. If None, uses default unit.
+            
+        Returns:
+        --------
+        int : Last used timestamp in specified unit
+        """
+        unit = unit or self.time_unit
+        return self.convert_from_nanoseconds(self._last_timestamp_ns, unit)
+
     def validate_timestamp(self,
                            timestamp: int,
                            unit: Optional[str] = None) -> int:
@@ -522,6 +538,7 @@ class Trajectory(TrajectoryInterface):
         base_datetime: Optional[datetime] = None,
         time_unit: str = "ms",
         enforce_monotonic: bool = True,
+        visualization_feature: Optional[Text] = None,
     ) -> None:
         """
         Args:
@@ -537,9 +554,12 @@ class Trajectory(TrajectoryInterface):
             base_datetime: Optional base datetime for timestamp calculations
             time_unit: Default time unit for timestamp inputs ('ns', 'μs', 'ms', 's')
             enforce_monotonic: Whether to enforce monotonically increasing timestamps
+            visualization_feature: Optional feature name to prioritize as first stream for visualization.
+                If None, automatically puts video-encoded streams first during compacting.
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
+        self.visualization_feature = visualization_feature
 
         # Handle backward compatibility for a hypothetical old_lossy_param
         # We are now removing the actual lossy_compression param
@@ -627,9 +647,6 @@ class Trajectory(TrajectoryInterface):
             return self._time_provider.time()
         return time.time()
 
-    def _get_current_timestamp(self):
-        current_time = (self._time() - self.start_time) * 1000000
-        return current_time
 
     def __len__(self):
         raise NotImplementedError
@@ -681,8 +698,9 @@ class Trajectory(TrajectoryInterface):
         has_data = len(self.container_file.streams) > 0
 
         try:
-            ts = self._get_current_timestamp()
-            logger.debug(f"Final timestamp: {ts}")
+            # Use TimeManager for consistent timestamps instead of _get_current_timestamp
+            ts_ms = self.time_manager.get_last_timestamp("ms")
+            logger.debug(f"Final timestamp from TimeManager: {ts_ms} milliseconds")
 
             for i, stream in enumerate(self.container_file.streams):
                 logger.debug(f"Flushing stream {i}: {stream}")
@@ -691,8 +709,8 @@ class Trajectory(TrajectoryInterface):
                     logger.debug(
                         f"Stream {i} flush returned {len(packets)} packets")
                     for j, packet in enumerate(packets):
-                        packet.pts = ts
-                        packet.dts = ts
+                        packet.pts = ts_ms
+                        packet.dts = ts_ms
                         if self.container_file is not None:
                             self.container_file.mux(packet)
                             logger.debug(
@@ -721,7 +739,7 @@ class Trajectory(TrajectoryInterface):
                 and os.path.getsize(self.path) > 0):
             logger.debug("Starting transcoding of pickled images")
             try:
-                self._transcode_pickled_images(ending_timestamp=ts)
+                self._transcode_pickled_images(ending_timestamp=ts_ms)
             except Exception as e:
                 logger.warning(
                     f"Transcoding failed: {e}. Keeping original file with pickled data."
@@ -1281,6 +1299,7 @@ class Trajectory(TrajectoryInterface):
         path: Text,
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
+        visualization_feature: Optional[Text] = None,
     ) -> "Trajectory":
         """
         Create a Trajectory object from a list of dictionaries.
@@ -1290,6 +1309,7 @@ class Trajectory(TrajectoryInterface):
             path (Text): path to the trajectory file
             video_codec (str, optional): Video codec to use. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
+            visualization_feature: Optional feature name to prioritize as first stream for visualization.
 
         Example:
         original_trajectory = [
@@ -1302,7 +1322,8 @@ class Trajectory(TrajectoryInterface):
         traj = cls(path,
                    mode="w",
                    video_codec=video_codec,
-                   codec_options=codec_options)
+                   codec_options=codec_options,
+                   visualization_feature=visualization_feature)
         logger.info(
             f"Creating a new trajectory file at {path} with {len(data)} steps")
         for step in data:
@@ -1318,6 +1339,7 @@ class Trajectory(TrajectoryInterface):
         feature_name_separator: Text = "/",
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
+        visualization_feature: Optional[Text] = None,
     ) -> "Trajectory":
         """
         Create a Trajectory object from a dictionary of lists.
@@ -1328,6 +1350,7 @@ class Trajectory(TrajectoryInterface):
             feature_name_separator (Text, optional): Delimiter to separate feature names. Defaults to "/".
             video_codec (str, optional): Video codec to use. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
+            visualization_feature: Optional feature name to prioritize as first stream for visualization.
 
         Returns:
             Trajectory: _description_
@@ -1346,6 +1369,7 @@ class Trajectory(TrajectoryInterface):
             mode="w",
             video_codec=video_codec,
             codec_options=codec_options,
+            visualization_feature=visualization_feature,
         )
         # flatten the data such that all data starts and put feature name with separator
         _flatten_dict_data = _flatten_dict(data,
@@ -1501,9 +1525,33 @@ class Trajectory(TrajectoryInterface):
             # Create a new container
             new_container = av.open(self.path, mode="w", format="matroska")
 
-            # Add existing streams to the new container
+            # Sort streams to prioritize visualization feature
+            def get_stream_priority(stream):
+                feature_name = stream.metadata.get("FEATURE_NAME")
+                if feature_name is None:
+                    return (3, 0)  # Skip invalid streams
+                
+                # Highest priority: specified visualization_feature
+                if self.visualization_feature and feature_name == self.visualization_feature:
+                    return (0, 0)
+                
+                # Second priority: streams that will become video-encoded (non-rawvideo) after transcoding
+                feature_type = self.feature_name_to_feature_type.get(feature_name)
+                if feature_type:
+                    target_encoding = self._get_encoding_of_feature(None, feature_type)
+                    if target_encoding != "rawvideo":
+                        return (1, 0)
+                
+                # Third priority: everything else (will remain rawvideo streams)
+                return (2, stream.index)
+            
+            # Sort streams by priority
+            sorted_streams = sorted(original_streams, key=get_stream_priority)
+            logger.error(f"Stream ordering: {[(s.metadata.get('FEATURE_NAME'), s.codec_context.codec.name) for s in sorted_streams]}")
+
+            # Add existing streams to the new container in sorted order
             d_original_stream_id_to_new_container_stream = {}
-            for stream in original_streams:
+            for stream in sorted_streams:
                 stream_feature = stream.metadata.get("FEATURE_NAME")
                 if stream_feature is None:
                     logger.debug(
