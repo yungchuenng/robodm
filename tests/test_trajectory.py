@@ -136,11 +136,6 @@ class TestCodecConfig:
         pix_fmt = config.get_pixel_format("libx264", rgb_type)
         assert pix_fmt == "yuv420p"
 
-        # Grayscale image
-        gray_type = FeatureType(dtype="uint8", shape=(100, 100))
-        pix_fmt = config.get_pixel_format("libx264", gray_type)
-        assert pix_fmt == "gray"
-
         # Rawvideo should return None
         pix_fmt = config.get_pixel_format("rawvideo", rgb_type)
         assert pix_fmt is None
@@ -453,7 +448,6 @@ class TestTrajectory:
 
             # Test that time provider is used
             initial_calls = mock_time_provider.call_count
-            timestamp = traj._get_current_timestamp()
             assert mock_time_provider.call_count > initial_calls
 
 

@@ -28,6 +28,7 @@ logging.getLogger("libav").setLevel(logging.CRITICAL)
 
 from robodm.codec_config import CodecConfig
 from robodm.time_manager import TimeManager
+from robodm.resampler import FrequencyResampler
 
 class StreamInfo:
 
@@ -440,9 +441,17 @@ class Trajectory(TrajectoryInterface):
         # Book-keeping structures
         # ------------------------------------------------------------------ #
         cache: dict[str, list[Any]] = {}
-        last_pts: dict[str, Optional[int]] = {}
-        kept_idx: dict[str, int] = {}
         done: set[str] = set()
+
+        # Instantiate the helper that takes care of all frequency based
+        # up-/down-sampling **and** slice filtering.
+        resampler = FrequencyResampler(
+            period_ms=period_ms,
+            sl_start=sl_start,
+            sl_stop=sl_stop,
+            sl_step=sl_step,
+            seek_offset_frames=seek_offset_frames,
+        )
 
         stream_count = 0
         for s in streams:
@@ -454,15 +463,14 @@ class Trajectory(TrajectoryInterface):
                 )
                 continue
             cache[fname] = []
-            last_pts[fname] = None
-            # If we seeked, start counting from the seek offset minus 1
-            # (since kept_idx gets incremented before checking)
-            kept_idx[fname] = seek_offset_frames - 1 if seek_performed else -1
+            # Inform the resampler so it can initialise internal bookkeeping
+            resampler.register_feature(fname)
+
             self.feature_name_to_feature_type[fname] = FeatureType.from_str(
                 ftype)
             stream_count += 1
             logger.debug(
-                f"Initialized feature '{fname}' with type {ftype}, kept_idx={kept_idx[fname]}"
+                f"Initialized feature '{fname}' with type {ftype}"
             )
 
         # Handle case where no valid streams were found
@@ -475,16 +483,6 @@ class Trajectory(TrajectoryInterface):
             return {}
 
         logger.debug(f"Processing {stream_count} feature streams")
-
-        # ------------------------------------------------------------------ #
-        # Helper: quickly decide if *resampled* index should be kept
-        # ------------------------------------------------------------------ #
-        def want(idx: int) -> bool:
-            if idx < sl_start:
-                return False
-            if sl_stop is not None and idx >= sl_stop:
-                return False
-            return ((idx - sl_start) % sl_step) == 0
 
         # ------------------------------------------------------------------ #
         # Main demux / decode loop
@@ -511,67 +509,46 @@ class Trajectory(TrajectoryInterface):
 
             processed_packets += 1
 
-            # --- per-stream frequency adjustment (upsampling/downsampling) ---
-            if period_ms is not None:
-                lp = last_pts[fname]
-                # Guard both operands – pts is now guaranteed not-None.
-                if lp is not None:
-                    time_gap = packet.pts - lp
+            # -------------------------------------------------------------- #
+            # Delegate frequency based up-/down-sampling to helper
+            # -------------------------------------------------------------- #
+            keep_current, num_dups = resampler.process_packet(
+                fname=fname,
+                pts=packet.pts,
+                has_prior_frame=bool(cache[fname]),
+            )
 
-                    if time_gap < period_ms:
-                        # Downsampling: skip this frame
-                        skipped_frequency += 1
-                        logger.debug(
-                            f"Skipping packet for '{fname}' due to frequency reduction: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}"
-                        )
-                        continue
-                    elif time_gap > period_ms and cache[fname]:
-                        # Upsampling: insert duplicate frames before processing current frame
-                        # Calculate how many intermediate frames we need
-                        num_intermediate_frames = int(
-                            time_gap // period_ms) - 1
-
-                        if num_intermediate_frames > 0:
-                            # Get the last frame data for duplication
-                            last_frame_data = cache[fname][-1]
-
-                            # Insert intermediate frames
-                            for i in range(1, num_intermediate_frames + 1):
-                                kept_idx[fname] += 1
-
-                                if want(kept_idx[fname]):
-                                    cache[fname].append(last_frame_data)
-                                    upsampled_frames += 1
-                                    logger.debug(
-                                        f"Inserted duplicate frame for '{fname}' at intermediate position {i}/{num_intermediate_frames}, kept_idx={kept_idx[fname]}"
-                                    )
-
-                    logger.debug(
-                        f"Keeping packet for '{fname}' after frequency check: pts={packet.pts}, last_pts={lp}, period_ms={period_ms}"
-                    )
-                else:
-                    logger.debug(
-                        f"First packet for '{fname}', no upsampling needed: pts={packet.pts}"
-                    )
-            else:
+            if not keep_current:
+                skipped_frequency += 1
                 logger.debug(
-                    f"No frequency resampling for '{fname}': period_ms is None"
+                    f"Skipping packet for '{fname}' due to frequency reduction (period_ms={period_ms})"
                 )
+                continue
 
-            # This packet is being kept at the resampling stage
-            kept_idx[fname] += 1
-            # Only update last_pts if this packet has a usable pts
-            last_pts[fname] = packet.pts
+            # Insert duplicate frames **before** processing current packet
+            if num_dups > 0 and cache[fname]:
+                last_frame_data = cache[fname][-1]
+                for i in range(num_dups):
+                    dup_idx = resampler.next_index(fname)
+                    if resampler.want(dup_idx):
+                        cache[fname].append(last_frame_data)
+                        upsampled_frames += 1
+                        logger.debug(
+                            f"Inserted duplicate frame for '{fname}' ({i+1}/{num_dups}) at idx={dup_idx}"
+                        )
 
-            if not want(kept_idx[fname]):  # slice filter
+            # Advance index for *current* packet and apply slice filter
+            current_idx = resampler.next_index(fname)
+            if not resampler.want(current_idx):
                 skipped_slice += 1
+                resampler.update_last_pts(fname, packet.pts)
                 logger.debug(
-                    f"Skipping packet for '{fname}' due to slice filter: kept_idx={kept_idx[fname]}"
+                    f"Skipping packet for '{fname}' due to slice filter: idx={current_idx}"
                 )
                 continue
 
             logger.debug(
-                f"Decoding packet for '{fname}': kept_idx={kept_idx[fname]}, pts={packet.pts}"
+                f"Decoding packet for '{fname}': idx={current_idx}, pts={packet.pts}"
             )
 
             # --- decode on demand only ------------------------------------
@@ -609,8 +586,11 @@ class Trajectory(TrajectoryInterface):
                         f"Decoded {codec} frame for '{fname}': shape={arr.shape}, dtype={arr.dtype}"
                     )
 
+            # Record timestamp for resampling logic
+            resampler.update_last_pts(fname, packet.pts)
+
             # Early exit: all streams finished their slice
-            if sl_stop is not None and kept_idx[fname] >= sl_stop:
+            if sl_stop is not None and resampler.kept_idx[fname] >= sl_stop:
                 done.add(fname)
                 logger.debug(
                     f"Feature '{fname}' reached slice stop ({sl_stop}), marking as done"
@@ -634,8 +614,8 @@ class Trajectory(TrajectoryInterface):
             for frame in s.decode(
                     None
             ):  # PyAV ≥ 10; on ≤ 0.5 use s.codec_context.decode(None)
-                kept_idx[fname] += 1
-                if not want(kept_idx[fname]):  # honour slice filter
+                flush_idx = resampler.next_index(fname)
+                if not resampler.want(flush_idx):  # honour slice filter
                     continue
 
                 ft = self.feature_name_to_feature_type[fname]
