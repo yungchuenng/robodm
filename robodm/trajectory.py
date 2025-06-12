@@ -1066,7 +1066,7 @@ class Trajectory(TrajectoryInterface):
             
             # Sort streams by priority
             sorted_streams = sorted(original_streams, key=get_stream_priority)
-            logger.error(f"Stream ordering: {[(s.metadata.get('FEATURE_NAME'), s.codec_context.codec.name) for s in sorted_streams]}")
+            logger.debug(f"Stream ordering: {[(s.metadata.get('FEATURE_NAME'), s.codec_context.codec.name) for s in sorted_streams]}")
 
             # Add existing streams to the new container in sorted order
             d_original_stream_id_to_new_container_stream = {}
@@ -1135,7 +1135,7 @@ class Trajectory(TrajectoryInterface):
                             new_packets = self._encode_frame(
                                 data, new_stream, pts_timestamp)
                             for new_packet in new_packets:
-                                print(
+                                logger.debug(
                                     f"Muxing transcoded packet: {new_packet}")
                                 new_container.mux(new_packet)
                                 packets_muxed += 1
@@ -1149,7 +1149,6 @@ class Trajectory(TrajectoryInterface):
                     else:
                         # If not a rawvideo stream, just remux the existing packet
                         logger.debug(f"Remuxing original packet: {packet}")
-                        print("muxing packet: ", packet)
                         new_container.mux(packet)
                         packets_muxed += 1
                 else:
@@ -1165,7 +1164,6 @@ class Trajectory(TrajectoryInterface):
                         None)  # type: ignore[attr-defined]
                     logger.debug(
                         f"Stream {stream.index} flush returned {len(flush_packets)} packets")
-                    print(f"stream {stream.index} flush packets: {flush_packets}")
                     for packet in flush_packets:
                         if packet.pts is None or packet.dts is None:
                             raise ValueError(f"Packet {packet} has no pts or dts")
@@ -1174,8 +1172,6 @@ class Trajectory(TrajectoryInterface):
                         packets_muxed += 1
                 except Exception as e:
                     logger.error(f"Error flushing stream {stream}: {e}")
-                    import traceback
-                    traceback.print_exc()
 
             logger.debug(f"Total packets muxed: {packets_muxed}")
 
