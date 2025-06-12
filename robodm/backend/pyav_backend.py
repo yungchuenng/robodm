@@ -144,39 +144,6 @@ class PyAVBackend(ContainerBackend):
 
         return packets
 
-    def decode_frame(self, packet: bytes, stream_index: int) -> Frame:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-
-        stream = self._idx_to_stream[stream_index]
-        pkt = av.Packet(packet)
-        pkt.stream = stream
-
-        # Decode – may return 0-N frames; we only care about the first one for now
-        frames = pkt.decode()
-        if frames:
-            frm = frames[0]
-            arr = frm.to_ndarray(format="rgb24")
-            return Frame(
-                data=arr,
-                pts=int(frm.pts or 0),
-                dts=int(frm.dts or 0),
-                time_base=(stream.time_base.numerator, stream.time_base.denominator),
-                stream_index=stream_index,
-                is_keyframe=bool(frm.key_frame),
-            )
-        # Fallback: raw packet (e.g. pickled data)
-        return Frame(
-            data=packet,
-            pts=int(pkt.pts or 0),
-            dts=int(pkt.dts or 0),
-            time_base=(stream.time_base.numerator, stream.time_base.denominator),
-            stream_index=stream_index,
-            is_keyframe=False,
-        )
-
     # ------------------------------------------------------------------
     # Mux / demux / seek wrappers
     # ------------------------------------------------------------------
@@ -208,38 +175,6 @@ class PyAVBackend(ContainerBackend):
     # ------------------------------------------------------------------
     # New containerization abstractions
     # ------------------------------------------------------------------
-    
-    def create_stream_with_config(self, config: StreamConfig) -> int:
-        """Create a stream with full configuration"""
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        
-        stream = self.container.add_stream(config.encoding)
-        
-        # Configure stream for video codecs
-        if config.encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}:
-            if config.width and config.height:
-                stream.width = config.width
-                stream.height = config.height
-            elif hasattr(config.feature_type, 'shape') and config.feature_type.shape:
-                shape = config.feature_type.shape
-                if len(shape) >= 2:
-                    stream.width = shape[1]
-                    stream.height = shape[0]
-
-            if config.pixel_format:
-                stream.pix_fmt = config.pixel_format
-
-            if config.codec_options:
-                stream.codec_context.options = config.codec_options
-
-        # Metadata and time-base
-        stream.metadata["FEATURE_NAME"] = config.feature_name
-        stream.metadata["FEATURE_TYPE"] = str(config.feature_type)
-        stream.time_base = Fraction(1, 1000)
-
-        self._idx_to_stream[stream.index] = stream
-        return stream.index
 
     def encode_data_to_packets(
         self, 
@@ -543,10 +478,6 @@ class PyAVBackend(ContainerBackend):
             packets.append(self.extract_packet_info(pkt))
         return packets
 
-    def decode_packet_info(self, packet_info: PacketInfo) -> Frame:
-        """Decode a PacketInfo into a Frame"""
-        return self.decode_frame(packet_info.data, packet_info.stream_index)
-
     def demux_streams(self, stream_indices: List[int]) -> Any:
         """Get an iterator for demuxing specific streams"""
         if self.container is None:
@@ -752,24 +683,6 @@ class PyAVBackend(ContainerBackend):
         else:
             frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
 
-        return frame
-
-    def _create_frame_depth(self, image_array, stream):
-        import numpy as _np
-
-        image_array = _np.array(image_array)
-
-        if image_array.dtype == _np.float32:
-            image_array = (image_array * 255).astype(_np.uint8)
-
-        if len(image_array.shape) == 3:
-            if image_array.shape[2] == 3:
-                image_array = _np.mean(image_array, axis=2).astype(_np.uint8)
-            else:
-                image_array = image_array[:, :, 0]
-
-        frame = av.VideoFrame.from_ndarray(image_array, format="gray")
-        frame.time_base = stream.time_base
         return frame
 
     def encode_data(

@@ -30,20 +30,6 @@ from robodm.codec_config import CodecConfig
 from robodm.time_manager import TimeManager
 from robodm.resampler import FrequencyResampler
 
-class StreamInfo:
-
-    def __init__(self, feature_name, feature_type, encoding):
-        self.feature_name = feature_name
-        self.feature_type = feature_type
-        self.encoding = encoding
-
-    def __str__(self):
-        return f"StreamInfo({self.feature_name}, {self.feature_type}, {self.encoding})"
-
-    def __repr__(self):
-        return self.__str__()
-
-
 class Trajectory(TrajectoryInterface):
 
     def __init__(
@@ -114,8 +100,6 @@ class Trajectory(TrajectoryInterface):
         self.trajectory_data = None  # trajectory_data
         self.start_time = self._time()
         self.mode = mode
-        self.stream_id_to_info: Dict[int,
-                                     StreamInfo] = {}  # stream_id: StreamInfo
         self.is_closed = False
         self.pending_write_tasks: List[Any] = (
             [])  # List to keep track of pending write tasks
@@ -1058,47 +1042,6 @@ class Trajectory(TrajectoryInterface):
                 logger.info(f"Restored original file to {self.path}")
             raise
 
-    def _encode_frame(self, data: Any, stream: Any,
-                      timestamp: int) -> List[av.Packet]:
-        """
-        encode the frame and write it to the stream file, return the packet
-        args:
-            data: data frame to be encoded
-            stream: stream to write the frame
-            timestamp: timestamp of the frame
-        return:
-            packet: encoded packet (for backwards compatibility)
-        
-        Note: This method is deprecated. Use backend.encode_data_to_packets() directly.
-        """
-        logger.debug(
-            f"Encoding data for feature {self.backend.get_stream_metadata(stream.index).get('FEATURE_NAME', 'unknown')} at timestamp {timestamp}"
-        )
-
-        # Use the new backend abstraction
-        packet_infos = self.backend.encode_data_to_packets(
-            data=data,
-            stream_index=stream.index,
-            timestamp=timestamp,
-            codec_config=self.codec_config,
-        )
-
-        logger.debug(f"Backend returned {len(packet_infos)} packet infos")
-        
-        # Convert PacketInfo back to av.Packet for backwards compatibility
-        import av
-        from fractions import Fraction
-        packets = []
-        for packet_info in packet_infos:
-            pkt = av.Packet(packet_info.data)
-            pkt.pts = packet_info.pts
-            pkt.dts = packet_info.dts
-            pkt.time_base = Fraction(*packet_info.time_base)
-            pkt.stream = stream
-            packets.append(pkt)
-        
-        return packets
-
     def _on_new_stream(self, new_feature, new_encoding, new_feature_type):
         from robodm.backend.base import StreamConfig
         
@@ -1177,15 +1120,6 @@ class Trajectory(TrajectoryInterface):
                     
             self.feature_name_to_stream = new_feature_name_to_stream
             
-            # Update stream info using backend
-            for i, stream_metadata in enumerate(updated_streams):
-                feature_name = stream_metadata.feature_name
-                if feature_name:
-                    feature_type = self.feature_name_to_feature_type.get(feature_name)
-                    if feature_type:
-                        self.stream_id_to_info[i] = StreamInfo(
-                            feature_name, feature_type, stream_metadata.encoding)
-
             self._remove(temp_path)
             self.is_closed = False
 
@@ -1228,8 +1162,6 @@ class Trajectory(TrajectoryInterface):
         stream.metadata["FEATURE_TYPE"] = str(feature_type)
         stream.time_base = Fraction(1, 1000)
         return stream
-
-
 
     def _get_encoding_of_feature(self, feature_value: Any,
                                  feature_type: Optional[FeatureType]) -> Text:

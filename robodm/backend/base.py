@@ -80,11 +80,6 @@ class ContainerBackend(ABC):
         pass
     
     @abstractmethod
-    def decode_frame(self, packet: bytes, stream_index: int) -> Frame:
-        """Decode a packet into a frame"""
-        pass
-    
-    @abstractmethod
     def mux(self, packet: bytes, stream_index: int) -> None:
         """Write a packet to the container"""
         pass
@@ -101,17 +96,6 @@ class ContainerBackend(ABC):
     @abstractmethod
     def seek(self, timestamp: int, stream_index: int) -> None:
         """Seek to specified timestamp in stream"""
-        pass
-
-    # New abstractions for containerization
-
-    @abstractmethod
-    def create_stream_with_config(self, config: StreamConfig) -> int:
-        """Create a stream with full configuration
-        
-        Returns:
-            int: Stream index
-        """
         pass
 
     @abstractmethod
@@ -215,10 +199,6 @@ class ContainerBackend(ABC):
         """
         pass
 
-    @abstractmethod
-    def decode_packet_info(self, packet_info: PacketInfo) -> Frame:
-        """Decode a PacketInfo into a Frame"""
-        pass
 
     @abstractmethod
     def demux_streams(self, stream_indices: List[int]) -> Any:
