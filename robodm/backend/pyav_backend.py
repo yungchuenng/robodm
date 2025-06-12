@@ -547,6 +547,99 @@ class PyAVBackend(ContainerBackend):
         """Decode a PacketInfo into a Frame"""
         return self.decode_frame(packet_info.data, packet_info.stream_index)
 
+    def demux_streams(self, stream_indices: List[int]) -> Any:
+        """Get an iterator for demuxing specific streams"""
+        if self.container is None:
+            raise RuntimeError("Container not opened")
+        
+        # Get the actual stream objects for the given indices
+        streams = [self._idx_to_stream[idx] for idx in stream_indices if idx in self._idx_to_stream]
+        return self.container.demux(streams)
+
+    def seek_container(self, timestamp: int, stream_index: int, any_frame: bool = True) -> None:
+        """Seek the container to a specific timestamp"""
+        if self.container is None:
+            raise RuntimeError("Container not opened")
+        if stream_index not in self._idx_to_stream:
+            raise ValueError(f"No stream with index {stream_index}")
+        
+        stream = self._idx_to_stream[stream_index]
+        self.container.seek(timestamp, stream=stream, any_frame=any_frame)
+
+    def decode_stream_frames(self, stream_index: int, packet_data: bytes = None) -> List[Any]:
+        """Decode frames from a stream, optionally with packet data"""
+        if stream_index not in self._idx_to_stream:
+            raise ValueError(f"No stream with index {stream_index}")
+        
+        stream = self._idx_to_stream[stream_index]
+        
+        if packet_data is None:
+            # Flush decoder
+            return list(stream.decode(None))
+        else:
+            # Decode specific packet
+            pkt = av.Packet(packet_data)
+            pkt.stream = stream
+            return list(pkt.decode())
+
+    def get_stream_metadata(self, stream_index: int) -> Dict[str, str]:
+        """Get metadata dictionary for a stream"""
+        if stream_index not in self._idx_to_stream:
+            raise ValueError(f"No stream with index {stream_index}")
+        
+        stream = self._idx_to_stream[stream_index]
+        return dict(stream.metadata)
+
+    def get_stream_codec_name(self, stream_index: int) -> str:
+        """Get the codec name for a stream"""
+        if stream_index not in self._idx_to_stream:
+            raise ValueError(f"No stream with index {stream_index}")
+        
+        stream = self._idx_to_stream[stream_index]
+        return stream.codec_context.codec.name
+
+    def get_feature_type_from_stream(self, stream_index: int) -> Optional[str]:
+        """Get the feature type string from stream metadata"""
+        if stream_index not in self._idx_to_stream:
+            return None
+        
+        stream = self._idx_to_stream[stream_index]
+        return stream.metadata.get("FEATURE_TYPE")
+
+    def convert_frame_to_array(self, frame: Any, feature_type: Any, format: str = "rgb24") -> Any:
+        """Convert a backend-specific frame to numpy array"""
+        import pickle
+        
+        # Handle pickled data (rawvideo packets)
+        if isinstance(frame, bytes):
+            return pickle.loads(frame)
+        
+        # Handle PyAV video frames
+        if hasattr(frame, 'to_ndarray'):
+            # Check if this is RGB data that should be decoded as RGB24
+            if (hasattr(feature_type, 'shape') and feature_type.shape and 
+                len(feature_type.shape) == 3 and feature_type.shape[2] == 3):
+                arr = frame.to_ndarray(format=format)
+            else:
+                # For non-RGB data, this might be an issue but handle gracefully
+                arr = frame.to_ndarray(format=format)
+            
+            # Reshape if needed
+            if hasattr(feature_type, 'shape') and feature_type.shape:
+                arr = arr.reshape(feature_type.shape)
+            
+            return arr
+        
+        # Fallback - return as is
+        return frame
+
+    def stream_exists_by_feature(self, feature_name: str) -> Optional[int]:
+        """Check if a stream exists for a given feature name"""
+        for stream_idx, stream in self._idx_to_stream.items():
+            if stream.metadata.get("FEATURE_NAME") == feature_name:
+                return stream_idx
+        return None
+
     # ------------------------------------------------------------------
     # High-level helpers that map directly from Trajectory logic
     # ------------------------------------------------------------------

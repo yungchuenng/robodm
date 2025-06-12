@@ -219,3 +219,101 @@ class ContainerBackend(ABC):
     def decode_packet_info(self, packet_info: PacketInfo) -> Frame:
         """Decode a PacketInfo into a Frame"""
         pass
+
+    @abstractmethod
+    def demux_streams(self, stream_indices: List[int]) -> Any:
+        """Get an iterator for demuxing specific streams
+        
+        Args:
+            stream_indices: List of stream indices to demux
+            
+        Returns:
+            Iterator that yields backend-specific packet objects
+        """
+        pass
+
+    @abstractmethod
+    def seek_container(self, timestamp: int, stream_index: int, any_frame: bool = True) -> None:
+        """Seek the container to a specific timestamp
+        
+        Args:
+            timestamp: Target timestamp in milliseconds
+            stream_index: Reference stream index for seeking
+            any_frame: Whether to seek to any frame or keyframes only
+        """
+        pass
+
+    @abstractmethod
+    def decode_stream_frames(self, stream_index: int, packet_data: bytes = None) -> List[Any]:
+        """Decode frames from a stream, optionally with packet data
+        
+        Args:
+            stream_index: Index of the stream to decode from
+            packet_data: Optional packet data to decode. If None, flush the decoder.
+            
+        Returns:
+            List of decoded frame objects (backend-specific)
+        """
+        pass
+
+    @abstractmethod
+    def get_stream_metadata(self, stream_index: int) -> Dict[str, str]:
+        """Get metadata dictionary for a stream
+        
+        Args:
+            stream_index: Index of the stream
+            
+        Returns:
+            Dictionary of metadata key-value pairs
+        """
+        pass
+
+    @abstractmethod
+    def get_stream_codec_name(self, stream_index: int) -> str:
+        """Get the codec name for a stream
+        
+        Args:
+            stream_index: Index of the stream
+            
+        Returns:
+            Codec name string
+        """
+        pass
+
+    @abstractmethod
+    def get_feature_type_from_stream(self, stream_index: int) -> Optional[str]:
+        """Get the feature type string from stream metadata
+        
+        Args:
+            stream_index: Index of the stream
+            
+        Returns:
+            Feature type string or None if not found
+        """
+        pass
+
+    @abstractmethod
+    def convert_frame_to_array(self, frame: Any, feature_type: Any, format: str = "rgb24") -> Any:
+        """Convert a backend-specific frame to numpy array
+        
+        Args:
+            frame: Backend-specific frame object
+            feature_type: FeatureType object for reshaping
+            format: Pixel format for conversion
+            
+        Returns:
+            Numpy array or processed data
+        """
+        pass
+
+    @abstractmethod
+    def stream_exists_by_feature(self, feature_name: str) -> Optional[int]:
+        """Check if a stream exists for a given feature name
+        
+        Args:
+            feature_name: Name of the feature to search for
+            
+        Returns:
+            Stream index if found, None otherwise
+        """
+        pass

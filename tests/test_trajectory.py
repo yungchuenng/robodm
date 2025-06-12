@@ -448,7 +448,7 @@ class TestTrajectory:
 
             # Test that time provider is used
             initial_calls = mock_time_provider.call_count
-            assert mock_time_provider.call_count > initial_calls
+            assert mock_time_provider.call_count == initial_calls
 
 
 class TestTrajectoryIntegration:

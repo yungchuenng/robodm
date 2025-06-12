@@ -7,7 +7,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from fractions import Fraction
+# fractions.Fraction imported where needed
 from typing import Any, Dict, List, Optional, Text, Tuple, Union, cast
 
 import av
@@ -378,18 +378,14 @@ class Trajectory(TrajectoryInterface):
         if self.backend.container is None:
             self.backend.open(self.path, "r")
 
-        container = self.backend.container  # type: ignore[assignment]
-        logger.debug(f"Using backend container with {len(container.streams)} streams")
-        streams = list(container.streams)
-
-        logger.debug(f"Container opened with {len(streams)} streams")
+        # Get stream metadata from backend
+        stream_metadata_list = self.backend.get_streams()
+        logger.debug(f"Using backend with {len(stream_metadata_list)} streams")
 
         # Handle empty trajectory case
-        if not streams:
+        if not stream_metadata_list:
             logger.debug("No streams found in container, returning empty dict")
-            container.close()
-            if hasattr(self.backend, "container"):
-                self.backend.container = None  # type: ignore[attr-defined]
+            self.backend.close()
             return {}
 
         # Track if we performed seeking to adjust slice logic
@@ -397,7 +393,7 @@ class Trajectory(TrajectoryInterface):
         seek_offset_frames = 0
 
         # Use seeking optimization when we have slicing
-        if sl_start > 0 and streams:
+        if sl_start > 0 and stream_metadata_list:
             if period_ms is not None:
                 # When combining frequency resampling with slicing, seek to the timestamp
                 # that corresponds to the sl_start-th frame AFTER resampling.
@@ -417,15 +413,16 @@ class Trajectory(TrajectoryInterface):
                     f"Seeking without frequency resampling: seek_ts_ms={seek_ts_ms}, seek_offset_frames={seek_offset_frames}"
                 )
 
-            # Seek using the first stream's time_base (which is 1/1000, so offset is in ms)
+            # Seek using the first stream
             try:
+                first_stream_idx = 0  # Use first available stream index
                 logger.debug(
-                    f"Attempting to seek to timestamp {seek_ts_ms} on stream {streams[0]}"
+                    f"Attempting to seek to timestamp {seek_ts_ms} on first stream"
                 )
-                container.seek(seek_ts_ms, stream=streams[0], any_frame=True)
+                self.backend.seek_container(seek_ts_ms, first_stream_idx, any_frame=True)
                 seek_performed = True
                 logger.debug("Seek successful")
-            except av.AVError as e:
+            except Exception as e:
                 # Seeking failed (e.g. single large packet stream) – fall back
                 # to decoding from the beginning.
                 logger.debug(
@@ -453,21 +450,25 @@ class Trajectory(TrajectoryInterface):
             seek_offset_frames=seek_offset_frames,
         )
 
+        # Build stream index mapping and initialize cache
+        stream_idx_to_feature: Dict[int, str] = {}
         stream_count = 0
-        for s in streams:
-            fname = s.metadata.get("FEATURE_NAME")
-            ftype = s.metadata.get("FEATURE_TYPE")
-            if not (fname and ftype):
+        
+        for i, stream_metadata in enumerate(stream_metadata_list):
+            fname = stream_metadata.feature_name
+            ftype = stream_metadata.feature_type
+            if not (fname and ftype) or fname == "unknown":
                 logger.debug(
-                    f"Skipping stream {s} without FEATURE_NAME or FEATURE_TYPE metadata"
+                    f"Skipping stream {i} without valid FEATURE_NAME or FEATURE_TYPE"
                 )
                 continue
+                
             cache[fname] = []
             # Inform the resampler so it can initialise internal bookkeeping
             resampler.register_feature(fname)
 
-            self.feature_name_to_feature_type[fname] = FeatureType.from_str(
-                ftype)
+            self.feature_name_to_feature_type[fname] = FeatureType.from_str(ftype)
+            stream_idx_to_feature[i] = fname
             stream_count += 1
             logger.debug(
                 f"Initialized feature '{fname}' with type {ftype}"
@@ -477,9 +478,7 @@ class Trajectory(TrajectoryInterface):
         if not cache:
             logger.debug(
                 "No valid feature streams found, returning empty dict")
-            container.close()
-            if hasattr(self.backend, "container"):
-                self.backend.container = None  # type: ignore[attr-defined]
+            self.backend.close()
             return {}
 
         logger.debug(f"Processing {stream_count} feature streams")
@@ -495,9 +494,15 @@ class Trajectory(TrajectoryInterface):
         decoded_packets = 0
         upsampled_frames = 0
 
-        for packet in container.demux(streams):
+        # Get stream indices for demuxing
+        valid_stream_indices = list(stream_idx_to_feature.keys())
+        
+        for packet in self.backend.demux_streams(valid_stream_indices):
             packet_count += 1
-            fname = packet.stream.metadata.get("FEATURE_NAME")
+            
+            # Get feature name from stream index
+            stream_idx = packet.stream.index
+            fname = stream_idx_to_feature.get(stream_idx)
             if fname is None or fname in done:
                 continue
 
@@ -552,7 +557,7 @@ class Trajectory(TrajectoryInterface):
             )
 
             # --- decode on demand only ------------------------------------
-            codec = packet.stream.codec_context.codec.name
+            codec = self.backend.get_stream_codec_name(stream_idx)
             if codec == "rawvideo":
                 raw = bytes(packet)
                 if not raw:  # zero-length placeholder
@@ -564,26 +569,15 @@ class Trajectory(TrajectoryInterface):
                 logger.debug(
                     f"Decoded rawvideo packet for '{fname}' (pickled data)")
             else:
-                for frame in packet.decode():
+                frames = self.backend.decode_stream_frames(stream_idx, bytes(packet))
+                for frame in frames:
                     ft = self.feature_name_to_feature_type[fname]
-                    # Only decode as RGB24 for RGB data, otherwise this shouldn't happen
-                    # since non-RGB data should use rawvideo
-                    if ft.shape and len(ft.shape) == 3 and ft.shape[2] == 3:
-                        # RGB data - decode as RGB24
-                        arr = frame.to_ndarray(format="rgb24")
-                    else:
-                        # This shouldn't happen with our new logic, but handle gracefully
-                        logger.warning(
-                            f"Non-RGB data {fname} with shape {ft.shape} using video codec - this may cause issues"
-                        )
-                        arr = frame.to_ndarray(format="rgb24")
-
-                    if ft.shape:
-                        arr = arr.reshape(ft.shape)
+                    # Use backend to convert frame to array
+                    arr = self.backend.convert_frame_to_array(frame, ft, format="rgb24")
                     cache[fname].append(arr)
                     decoded_packets += 1
                     logger.debug(
-                        f"Decoded {codec} frame for '{fname}': shape={arr.shape}, dtype={arr.dtype}"
+                        f"Decoded {codec} frame for '{fname}': shape={getattr(arr, 'shape', 'N/A')}, dtype={getattr(arr, 'dtype', 'N/A')}"
                     )
 
             # Record timestamp for resampling logic
@@ -603,41 +597,28 @@ class Trajectory(TrajectoryInterface):
         # ------------------------------------------------------------------ #
         # Flush any buffered pictures that the decoder is still holding
         # ------------------------------------------------------------------ #
-        for s in streams:
-            fname = s.metadata.get("FEATURE_NAME")
+        for stream_idx, fname in stream_idx_to_feature.items():
             if not fname or fname not in cache:
                 continue
-            if s.codec_context.codec.name == "rawvideo":
+            
+            codec = self.backend.get_stream_codec_name(stream_idx)
+            if codec == "rawvideo":
                 continue  # pickled streams have no buffer
 
-            # Passing None tells PyAV/FFmpeg "end of stream – give me leftovers"
-            for frame in s.decode(
-                    None
-            ):  # PyAV ≥ 10; on ≤ 0.5 use s.codec_context.decode(None)
+            # Flush the decoder by passing None
+            frames = self.backend.decode_stream_frames(stream_idx, packet_data=None)
+            for frame in frames:
                 flush_idx = resampler.next_index(fname)
                 if not resampler.want(flush_idx):  # honour slice filter
                     continue
 
                 ft = self.feature_name_to_feature_type[fname]
-                # Only decode as RGB24 for RGB data
-                if ft.shape and len(ft.shape) == 3 and ft.shape[2] == 3:
-                    # RGB data - decode as RGB24
-                    arr = frame.to_ndarray(format="rgb24")
-                else:
-                    # This shouldn't happen with our new logic, but handle gracefully
-                    logger.warning(
-                        f"Non-RGB data {fname} with shape {ft.shape} using video codec - this may cause issues"
-                    )
-                    arr = frame.to_ndarray(format="rgb24")
-
-                if ft.shape:
-                    arr = arr.reshape(ft.shape)
+                # Use backend to convert frame to array
+                arr = self.backend.convert_frame_to_array(frame, ft, format="rgb24")
                 cache[fname].append(arr)
                 decoded_packets += 1
 
-        container.close()
-        if hasattr(self.backend, "container"):
-            self.backend.container = None  # type: ignore[attr-defined]
+        self.backend.close()
 
         logger.debug(
             f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
@@ -732,13 +713,15 @@ class Trajectory(TrajectoryInterface):
         # Check if the feature is already in the container
         # here we enforce rawvideo encoding for all features
         # later on the compacting step, we will encode the pickled data to images
-        if feature not in self.feature_name_to_stream:
+        stream_idx = self.backend.stream_exists_by_feature(feature)
+        if stream_idx is None:
             logger.debug(f"Creating new stream for feature: {feature}")
             self._on_new_stream(feature, "rawvideo", feature_type)
+            stream_idx = self.backend.stream_exists_by_feature(feature)
+            if stream_idx is None:
+                raise RuntimeError(f"Failed to create stream for feature {feature}")
 
-        # get the stream
-        stream = self.feature_name_to_stream[feature]
-        logger.debug(f"Using stream: {stream}")
+        logger.debug(f"Using stream index: {stream_idx}")
 
         # get the timestamp using TimeManager
         if timestamp is None:
@@ -748,18 +731,21 @@ class Trajectory(TrajectoryInterface):
 
         logger.debug(
             f"Encoding frame with validated timestamp: {validated_timestamp}")
-        # encode the frame
-        packets = self._encode_frame(data, stream, validated_timestamp)
-        logger.debug(f"Generated {len(packets)} packets")
+        
+        # encode the frame using backend
+        packet_infos = self.backend.encode_data_to_packets(
+            data=data,
+            stream_index=stream_idx,
+            timestamp=validated_timestamp,
+            codec_config=self.codec_config,
+        )
+        logger.debug(f"Generated {len(packet_infos)} packet infos")
 
-        # write the packet to the container
-        for i, packet in enumerate(packets):
-            logger.debug(f"Muxing packet {i}: {packet}")
-            if self.container_file is not None:
-                self.container_file.mux(packet)
-                logger.debug(f"Successfully muxed packet {i}")
-            else:
-                raise RuntimeError("Container file is None, cannot mux packet")
+        # write the packets to the container
+        for i, packet_info in enumerate(packet_infos):
+            logger.debug(f"Muxing packet {i}: {packet_info}")
+            self.backend.mux_packet_info(packet_info)
+            logger.debug(f"Successfully muxed packet {i}")
 
     def add_by_dict(
         self,
@@ -908,38 +894,41 @@ class Trajectory(TrajectoryInterface):
 
     def _load_from_container(self):
         """
-        Load the container file with the entire VLA trajectory using multi-processing for image streams.
+        Load the container file with the entire VLA trajectory using backend abstraction.
 
         returns:
             np_cache: dictionary with the decoded data
 
         Workflow:
-        - Get schema of the container file.
+        - Get schema of the container file via backend.
         - Preallocate decoded streams.
-        - Use multi-processing to decode image streams separately.
-        - Decode non-image streams in the main process.
-        - Combine results from all processes.
+        - Use backend to demux and decode all streams.
+        - Combine results into numpy arrays.
         """
 
-        container = av.open(self.path, mode="r", format="matroska")
-        streams = container.streams
+        # Open container via backend
+        if self.backend.container is None:
+            self.backend.open(self.path, "r")
+
+        # Get stream metadata from backend
+        stream_metadata_list = self.backend.get_streams()
 
         # Dictionary to store dynamic lists for collecting data
         np_cache_lists: Dict[str, List[Any]] = {}
-        feature_name_to_stream = {}
+        stream_idx_to_feature: Dict[int, str] = {}
 
         # Initialize lists for each feature
-        for stream in streams:
-            feature_name = stream.metadata.get("FEATURE_NAME")
-            if feature_name is None:
-                logger.debug(f"Skipping stream without FEATURE_NAME: {stream}")
+        for i, stream_metadata in enumerate(stream_metadata_list):
+            feature_name = stream_metadata.feature_name
+            if feature_name is None or feature_name == "unknown":
+                logger.debug(f"Skipping stream {i} without valid FEATURE_NAME")
                 continue
-            feature_type_str = stream.metadata.get("FEATURE_TYPE")
+            feature_type_str = stream_metadata.feature_type
             if feature_type_str is None:
-                logger.debug(f"Skipping stream without FEATURE_TYPE: {stream}")
+                logger.debug(f"Skipping stream {i} without FEATURE_TYPE")
                 continue
             feature_type = FeatureType.from_str(feature_type_str)
-            feature_name_to_stream[feature_name] = stream
+            stream_idx_to_feature[i] = feature_name
             self.feature_name_to_feature_type[feature_name] = feature_type
 
             logger.debug(
@@ -947,23 +936,22 @@ class Trajectory(TrajectoryInterface):
             )
             np_cache_lists[feature_name] = []
 
+        # Get valid stream indices for demuxing
+        valid_stream_indices = list(stream_idx_to_feature.keys())
+
         # Decode the frames and store them in the lists
-        for packet in container.demux(list(streams)):
-            feature_name = packet.stream.metadata.get("FEATURE_NAME")
+        for packet in self.backend.demux_streams(valid_stream_indices):
+            stream_idx = packet.stream.index
+            feature_name = stream_idx_to_feature.get(stream_idx)
             if feature_name is None:
                 logger.debug(
-                    f"Skipping stream without FEATURE_NAME: {packet.stream}")
+                    f"Skipping packet from unmapped stream {stream_idx}")
                 continue
-            feature_type_str = packet.stream.metadata.get("FEATURE_TYPE")
-            if feature_type_str is None:
-                logger.debug(
-                    f"Skipping stream without FEATURE_TYPE: {packet.stream}")
-                continue
-            feature_type = FeatureType.from_str(feature_type_str)
 
+            feature_type = self.feature_name_to_feature_type[feature_name]
             logger.debug(f"Decoding {feature_name} with time {packet.dts}")
 
-            feature_codec = packet.stream.codec_context.codec.name
+            feature_codec = self.backend.get_stream_codec_name(stream_idx)
             if feature_codec == "rawvideo":
                 packet_in_bytes = bytes(packet)
                 if packet_in_bytes:
@@ -972,34 +960,15 @@ class Trajectory(TrajectoryInterface):
                     np_cache_lists[feature_name].append(data)
                 else:
                     logger.debug(
-                        f"Skipping empty packet: {packet} for {feature_name}")
+                        f"Skipping empty packet for {feature_name}")
             else:
-                frames = packet.decode()
+                frames = self.backend.decode_stream_frames(stream_idx, bytes(packet))
                 for frame in frames:
-                    # Only decode as RGB24 for RGB data
-                    shape = feature_type.shape
-                    if shape and len(shape) == 3 and shape[2] == 3:
-                        # RGB data - decode as RGB24
-                        if shape is not None:
-                            data = frame.to_ndarray(  # type: ignore[attr-defined]
-                                format="rgb24").reshape(shape)
-                        else:
-                            data = frame.to_ndarray(
-                                format="rgb24")  # type: ignore[attr-defined]
-                    else:
-                        # This shouldn't happen with our new logic, but handle gracefully
-                        logger.warning(
-                            f"Non-RGB data {feature_name} with shape {shape} using video codec"
-                        )
-                        if shape is not None:
-                            data = frame.to_ndarray(  # type: ignore[attr-defined]
-                                format="rgb24").reshape(shape)
-                        else:
-                            data = frame.to_ndarray(
-                                format="rgb24")  # type: ignore[attr-defined]
+                    # Use backend to convert frame to array
+                    data = self.backend.convert_frame_to_array(frame, feature_type, format="rgb24")
                     np_cache_lists[feature_name].append(data)
 
-        container.close()
+        self.backend.close()
 
         # Convert lists to numpy arrays
         np_cache = {}
@@ -1099,9 +1068,11 @@ class Trajectory(TrajectoryInterface):
             timestamp: timestamp of the frame
         return:
             packet: encoded packet (for backwards compatibility)
+        
+        Note: This method is deprecated. Use backend.encode_data_to_packets() directly.
         """
         logger.debug(
-            f"Encoding data for feature {stream.metadata.get('FEATURE_NAME')} at timestamp {timestamp}"
+            f"Encoding data for feature {self.backend.get_stream_metadata(stream.index).get('FEATURE_NAME', 'unknown')} at timestamp {timestamp}"
         )
 
         # Use the new backend abstraction
@@ -1115,6 +1086,8 @@ class Trajectory(TrajectoryInterface):
         logger.debug(f"Backend returned {len(packet_infos)} packet infos")
         
         # Convert PacketInfo back to av.Packet for backwards compatibility
+        import av
+        from fractions import Fraction
         packets = []
         for packet_info in packet_infos:
             pkt = av.Packet(packet_info.data)
@@ -1129,16 +1102,26 @@ class Trajectory(TrajectoryInterface):
     def _on_new_stream(self, new_feature, new_encoding, new_feature_type):
         from robodm.backend.base import StreamConfig
         
-        if new_feature in self.feature_name_to_stream:
+        # Check if stream already exists for this feature
+        if self.backend.stream_exists_by_feature(new_feature) is not None:
             return
 
-        if not self.feature_name_to_stream:
+        # Get current streams from backend
+        current_streams = self.backend.get_streams()
+        
+        if not current_streams:
             logger.debug(
                 f"Creating a new stream for the first feature {new_feature}")
-            self.feature_name_to_stream[
-                new_feature] = self._add_stream_to_container(
-                    self.container_file, new_feature, new_encoding,
-                    new_feature_type)
+            # Use backend to add the stream directly
+            stream = self.backend.add_stream_for_feature(
+                feature_name=new_feature,
+                feature_type=new_feature_type,
+                codec_config=self.codec_config,
+                encoding=new_encoding,
+            )
+            # Update legacy tracking for backwards compatibility
+            self.feature_name_to_stream[new_feature] = stream
+            self.container_file = self.backend.container
         else:
             logger.debug(f"Adding a new stream for the feature {new_feature}")
             # Following is a workaround because we cannot add new streams to an existing container
@@ -1151,17 +1134,18 @@ class Trajectory(TrajectoryInterface):
 
             # Build stream configurations for existing streams
             existing_stream_configs = []
-            for feature_name, stream in self.feature_name_to_stream.items():
-                if feature_name == new_feature:
+            for i, stream_metadata in enumerate(current_streams):
+                if stream_metadata.feature_name == new_feature:
                     continue  # Skip the new feature we're adding
-                feature_type = self.feature_name_to_feature_type[feature_name]
-                encoding = stream.codec_context.codec.name
+                feature_type = self.feature_name_to_feature_type.get(stream_metadata.feature_name)
+                if feature_type is None:
+                    continue
                 config = StreamConfig(
-                    feature_name=feature_name,
+                    feature_name=stream_metadata.feature_name,
                     feature_type=feature_type,
-                    encoding=encoding
+                    encoding=stream_metadata.encoding
                 )
-                existing_stream_configs.append((stream.index, config))
+                existing_stream_configs.append((i, config))
 
             # Add new stream configuration
             new_stream_config = StreamConfig(
@@ -1178,28 +1162,29 @@ class Trajectory(TrajectoryInterface):
                 new_stream_configs=[new_stream_config]
             )
 
-            # Update our tracking structures
-            # The backend has already updated container and _idx_to_stream
+            # Update our tracking structures using backend information
             self.container_file = self.backend.container
             
-            # Update feature_name_to_stream mapping
+            # Update feature_name_to_stream mapping using backend
             new_feature_name_to_stream = {}
-            for stream_idx, stream in self.backend._idx_to_stream.items():
-                feature_name = stream.metadata.get("FEATURE_NAME")
-                if feature_name:
-                    new_feature_name_to_stream[feature_name] = stream
+            updated_streams = self.backend.get_streams()
+            for i, stream_metadata in enumerate(updated_streams):
+                feature_name = stream_metadata.feature_name
+                if feature_name and hasattr(self.backend, '_idx_to_stream'):
+                    stream = self.backend._idx_to_stream.get(i)
+                    if stream:
+                        new_feature_name_to_stream[feature_name] = stream
                     
             self.feature_name_to_stream = new_feature_name_to_stream
             
-            # Update stream info
-            for stream_idx, stream in self.backend._idx_to_stream.items():
-                feature_name = stream.metadata.get("FEATURE_NAME")
+            # Update stream info using backend
+            for i, stream_metadata in enumerate(updated_streams):
+                feature_name = stream_metadata.feature_name
                 if feature_name:
                     feature_type = self.feature_name_to_feature_type.get(feature_name)
-                    encoding = stream.codec_context.codec.name
                     if feature_type:
-                        self.stream_id_to_info[stream_idx] = StreamInfo(
-                            feature_name, feature_type, encoding)
+                        self.stream_id_to_info[i] = StreamInfo(
+                            feature_name, feature_type, stream_metadata.encoding)
 
             self._remove(temp_path)
             self.is_closed = False
@@ -1220,6 +1205,9 @@ class Trajectory(TrajectoryInterface):
 
         # Legacy path – keep the original PyAV-based implementation for
         # transient containers (e.g. during transcoding).
+        # Import PyAV locally since it's only needed for legacy paths
+        from fractions import Fraction
+        
         stream = container.add_stream(encoding)
 
         if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
