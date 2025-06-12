@@ -57,47 +57,10 @@ class ContainerBackend(ABC):
         pass
     
     @abstractmethod
-    def add_stream(self, metadata: StreamMetadata) -> int:
-        """Add a new stream to the container
-        
-        Returns:
-            int: Stream index
-        """
-        pass
-    
-    @abstractmethod
     def get_streams(self) -> List[StreamMetadata]:
         """Get list of all streams in the container"""
         pass
     
-    @abstractmethod
-    def encode_frame(self, frame: Frame, stream_index: int) -> List[bytes]:
-        """Encode a frame into packets
-        
-        Returns:
-            List[bytes]: List of encoded packets
-        """
-        pass
-    
-    @abstractmethod
-    def mux(self, packet: bytes, stream_index: int) -> None:
-        """Write a packet to the container"""
-        pass
-    
-    @abstractmethod
-    def demux(self) -> List[tuple[bytes, int]]:
-        """Read packets from container
-        
-        Returns:
-            List[tuple[bytes, int]]: List of (packet_data, stream_index) tuples
-        """
-        pass
-    
-    @abstractmethod
-    def seek(self, timestamp: int, stream_index: int) -> None:
-        """Seek to specified timestamp in stream"""
-        pass
-
     @abstractmethod
     def encode_data_to_packets(
         self, 
@@ -110,15 +73,6 @@ class ContainerBackend(ABC):
         
         Returns:
             List[PacketInfo]: List of packets ready for muxing
-        """
-        pass
-
-    @abstractmethod
-    def flush_stream(self, stream_index: int) -> List[PacketInfo]:
-        """Flush any buffered packets from a stream
-        
-        Returns:
-            List[PacketInfo]: Buffered packets
         """
         pass
 
@@ -175,30 +129,10 @@ class ContainerBackend(ABC):
         """
         pass
 
-    @abstractmethod
-    def get_stream_info(self, stream_index: int) -> StreamMetadata:
-        """Get metadata for a specific stream"""
-        pass
-
     @abstractmethod 
     def validate_packet(self, packet: Any) -> bool:
         """Check if a packet has valid pts (dts may be optional)"""
         pass
-
-    @abstractmethod
-    def extract_packet_info(self, packet: Any) -> PacketInfo:
-        """Extract PacketInfo from a backend-specific packet object"""
-        pass
-
-    @abstractmethod
-    def demux_with_info(self) -> List[PacketInfo]:
-        """Demux packets and return as PacketInfo objects
-        
-        Returns:
-            List[PacketInfo]: Packets with full metadata
-        """
-        pass
-
 
     @abstractmethod
     def demux_streams(self, stream_indices: List[int]) -> Any:
@@ -237,18 +171,6 @@ class ContainerBackend(ABC):
         pass
 
     @abstractmethod
-    def get_stream_metadata(self, stream_index: int) -> Dict[str, str]:
-        """Get metadata dictionary for a stream
-        
-        Args:
-            stream_index: Index of the stream
-            
-        Returns:
-            Dictionary of metadata key-value pairs
-        """
-        pass
-
-    @abstractmethod
     def get_stream_codec_name(self, stream_index: int) -> str:
         """Get the codec name for a stream
         
@@ -257,18 +179,6 @@ class ContainerBackend(ABC):
             
         Returns:
             Codec name string
-        """
-        pass
-
-    @abstractmethod
-    def get_feature_type_from_stream(self, stream_index: int) -> Optional[str]:
-        """Get the feature type string from stream metadata
-        
-        Args:
-            stream_index: Index of the stream
-            
-        Returns:
-            Feature type string or None if not found
         """
         pass
 

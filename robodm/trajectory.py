@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 logging.getLogger("libav").setLevel(logging.CRITICAL)
 
-from robodm.codec_config import CodecConfig
+from robodm.backend.codec_config import CodecConfig
 from robodm.time_manager import TimeManager
 from robodm.resampler import FrequencyResampler
 
@@ -69,15 +69,6 @@ class Trajectory(TrajectoryInterface):
         self.feature_name_separator = feature_name_separator
         self.visualization_feature = visualization_feature
 
-        # Handle backward compatibility for a hypothetical old_lossy_param
-        # We are now removing the actual lossy_compression param
-        # old_lossy_param = kwargs.pop('lossy_compression', None) # Example if it were in kwargs
-        # if old_lossy_param is not None:
-        #     warnings.warn("lossy_compression parameter is deprecated. Use video_codec parameter instead.", UserWarning)
-        #     if old_lossy_param:
-        #         video_codec = "libaom-av1"
-        #     else:
-        #         video_codec = "ffv1"
 
         # Initialize codec configuration
         self.codec_config = CodecConfig(video_codec, codec_options)
@@ -875,106 +866,7 @@ class Trajectory(TrajectoryInterface):
             current_timestamp += time_interval_ms
         traj.close()
         return traj
-
-    def _load_from_container(self):
-        """
-        Load the container file with the entire VLA trajectory using backend abstraction.
-
-        returns:
-            np_cache: dictionary with the decoded data
-
-        Workflow:
-        - Get schema of the container file via backend.
-        - Preallocate decoded streams.
-        - Use backend to demux and decode all streams.
-        - Combine results into numpy arrays.
-        """
-
-        # Open container via backend
-        if self.backend.container is None:
-            self.backend.open(self.path, "r")
-
-        # Get stream metadata from backend
-        stream_metadata_list = self.backend.get_streams()
-
-        # Dictionary to store dynamic lists for collecting data
-        np_cache_lists: Dict[str, List[Any]] = {}
-        stream_idx_to_feature: Dict[int, str] = {}
-
-        # Initialize lists for each feature
-        for i, stream_metadata in enumerate(stream_metadata_list):
-            feature_name = stream_metadata.feature_name
-            if feature_name is None or feature_name == "unknown":
-                logger.debug(f"Skipping stream {i} without valid FEATURE_NAME")
-                continue
-            feature_type_str = stream_metadata.feature_type
-            if feature_type_str is None:
-                logger.debug(f"Skipping stream {i} without FEATURE_TYPE")
-                continue
-            feature_type = FeatureType.from_str(feature_type_str)
-            stream_idx_to_feature[i] = feature_name
-            self.feature_name_to_feature_type[feature_name] = feature_type
-
-            logger.debug(
-                f"Initializing list for {feature_name} with feature_type {feature_type}"
-            )
-            np_cache_lists[feature_name] = []
-
-        # Get valid stream indices for demuxing
-        valid_stream_indices = list(stream_idx_to_feature.keys())
-
-        # Decode the frames and store them in the lists
-        for packet in self.backend.demux_streams(valid_stream_indices):
-            stream_idx = packet.stream.index
-            feature_name = stream_idx_to_feature.get(stream_idx)
-            if feature_name is None:
-                logger.debug(
-                    f"Skipping packet from unmapped stream {stream_idx}")
-                continue
-
-            feature_type = self.feature_name_to_feature_type[feature_name]
-            logger.debug(f"Decoding {feature_name} with time {packet.dts}")
-
-            feature_codec = self.backend.get_stream_codec_name(stream_idx)
-            if feature_codec == "rawvideo":
-                packet_in_bytes = bytes(packet)
-                if packet_in_bytes:
-                    # Decode the packet
-                    data = pickle.loads(packet_in_bytes)
-                    np_cache_lists[feature_name].append(data)
-                else:
-                    logger.debug(
-                        f"Skipping empty packet for {feature_name}")
-            else:
-                frames = self.backend.decode_stream_frames(stream_idx, bytes(packet))
-                for frame in frames:
-                    # Use backend to convert frame to array
-                    data = self.backend.convert_frame_to_array(frame, feature_type, format="rgb24")
-                    np_cache_lists[feature_name].append(data)
-
-        self.backend.close()
-
-        # Convert lists to numpy arrays
-        np_cache = {}
-        for feature_name, data_list in np_cache_lists.items():
-            logger.debug(
-                f"Converting {feature_name} list of length {len(data_list)} to numpy array"
-            )
-            if not data_list:
-                logger.debug(f"Warning: {feature_name} has no data!")
-                continue
-
-            feature_type = self.feature_name_to_feature_type[feature_name]
-
-            if feature_type.dtype == "string":
-                np_cache[feature_name] = np.array(data_list, dtype=object)
-            else:
-                # Convert list to numpy array
-                np_cache[feature_name] = np.array(data_list,
-                                                  dtype=feature_type.dtype)
-
-        return np_cache
-
+    
     def _transcode_pickled_images(self,
                                   ending_timestamp: Optional[int] = None):
         """

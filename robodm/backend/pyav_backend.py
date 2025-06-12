@@ -21,7 +21,9 @@ from typing import Any, Dict, List, Tuple, Optional
 import av
 import numpy as np
 
-from .base import ContainerBackend, Frame, StreamMetadata, PacketInfo, StreamConfig
+from .base import ContainerBackend, StreamMetadata, PacketInfo, StreamConfig
+from robodm.feature import FeatureType
+from robodm.backend.codec_config import CodecConfig
 
 logger = logging.getLogger(__name__)
 
@@ -68,28 +70,6 @@ class PyAVBackend(ContainerBackend):
             self.container = None
             self._idx_to_stream.clear()
 
-    def add_stream(self, metadata: StreamMetadata) -> int:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        stream = self.container.add_stream(metadata.encoding)
-
-        # Set metadata on stream
-        stream.metadata["FEATURE_NAME"] = metadata.feature_name
-        stream.metadata["FEATURE_TYPE"] = metadata.feature_type
-
-        # Time-base
-        num, den = metadata.time_base
-        stream.time_base = Fraction(num, den)
-
-        # Additional metadata
-        if metadata.additional_metadata:
-            for k, v in metadata.additional_metadata.items():
-                stream.metadata[k] = v
-
-        # Save mapping and return index
-        self._idx_to_stream[stream.index] = stream
-        return stream.index
-
     def get_streams(self) -> List[StreamMetadata]:
         out: List[StreamMetadata] = []
         for idx, stream in self._idx_to_stream.items():
@@ -106,71 +86,6 @@ class PyAVBackend(ContainerBackend):
                 )
             )
         return out
-
-    # ------------------------------------------------------------------
-    # Encoding / decoding helpers
-    # ------------------------------------------------------------------
-    def encode_frame(self, frame: Frame, stream_index: int) -> List[bytes]:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-
-        stream = self._idx_to_stream[stream_index]
-        codec_name = stream.codec_context.codec.name
-
-        packets: List[bytes] = []
-
-        # Video path (numpy ndarray → VideoFrame)
-        if isinstance(frame.data, np.ndarray) and codec_name != "rawvideo":
-            # We always assume RGB24 input here – higher-level code is
-            # responsible for ensuring shape / dtype compatibility.
-            vframe = av.VideoFrame.from_ndarray(frame.data, format="rgb24")
-            # PyAV requires re-setting pts/dts on the VideoFrame
-            vframe.pts = frame.pts
-            vframe.dts = frame.dts
-            vframe.time_base = Fraction(*frame.time_base)
-
-            for pkt in stream.encode(vframe):  # type: ignore[attr-defined]
-                packets.append(bytes(pkt))
-        else:
-            # Raw path (typically pickled data)
-            pkt = av.Packet(frame.data if isinstance(frame.data, (bytes, bytearray)) else bytes(frame.data))
-            pkt.pts = frame.pts
-            pkt.dts = frame.dts
-            pkt.time_base = Fraction(*frame.time_base)
-            pkt.stream = stream
-            packets.append(bytes(pkt))
-
-        return packets
-
-    # ------------------------------------------------------------------
-    # Mux / demux / seek wrappers
-    # ------------------------------------------------------------------
-    def mux(self, packet: bytes, stream_index: int) -> None:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-
-        pkt = av.Packet(packet)
-        pkt.stream = self._idx_to_stream[stream_index]
-        self.container.mux(pkt)
-
-    def demux(self) -> List[Tuple[bytes, int]]:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        out: List[Tuple[bytes, int]] = []
-        for pkt in self.container.demux(self.container.streams):  # type: ignore[arg-type]
-            out.append((bytes(pkt), pkt.stream.index))
-        return out
-
-    def seek(self, timestamp: int, stream_index: int) -> None:
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-        self.container.seek(timestamp, stream=self._idx_to_stream[stream_index], any_frame=True)
 
     # ------------------------------------------------------------------
     # New containerization abstractions
@@ -230,8 +145,15 @@ class PyAVBackend(ContainerBackend):
         
         return packets
 
-    def flush_stream(self, stream_index: int) -> List[PacketInfo]:
-        """Flush any buffered packets from a stream"""
+    def flush_all_streams(self) -> List[PacketInfo]:
+        """Flush all streams and return all buffered packets"""
+        packets: List[PacketInfo] = []
+        for stream_index in self._idx_to_stream:
+            packets.extend(self._flush_stream(stream_index))
+        return packets
+
+    def _flush_stream(self, stream_index: int) -> List[PacketInfo]:
+        """Internal helper to flush a single stream"""
         if stream_index not in self._idx_to_stream:
             raise ValueError(f"No stream with index {stream_index}")
         
@@ -255,13 +177,6 @@ class PyAVBackend(ContainerBackend):
         except Exception as e:
             logger.error(f"Error flushing stream {stream_index}: {e}")
         
-        return packets
-
-    def flush_all_streams(self) -> List[PacketInfo]:
-        """Flush all streams and return all buffered packets"""
-        packets: List[PacketInfo] = []
-        for stream_index in self._idx_to_stream:
-            packets.extend(self.flush_stream(stream_index))
         return packets
     
     def mux_packet_info(self, packet_info: PacketInfo) -> None:
@@ -434,49 +349,10 @@ class PyAVBackend(ContainerBackend):
         
         return stream_mapping
 
-    def get_stream_info(self, stream_index: int) -> StreamMetadata:
-        """Get metadata for a specific stream"""
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-        
-        stream = self._idx_to_stream[stream_index]
-        feature_name = stream.metadata.get("FEATURE_NAME", f"stream_{stream_index}")
-        feature_type = stream.metadata.get("FEATURE_TYPE", "unknown")
-        encoding = stream.codec_context.codec.name
-        time_base = (stream.time_base.numerator, stream.time_base.denominator)
-        
-        return StreamMetadata(
-            feature_name=feature_name,
-            feature_type=feature_type,
-            encoding=encoding,
-            time_base=time_base
-        )
-
     def validate_packet(self, packet: Any) -> bool:
         """Check if a packet has valid pts/dts"""
         # Only check pts like the original code - some packets may not have dts
         return packet.pts is not None
-
-    def extract_packet_info(self, packet: Any) -> PacketInfo:
-        """Extract PacketInfo from a PyAV packet object"""
-        return PacketInfo(
-            data=bytes(packet),
-            pts=packet.pts,
-            dts=packet.dts,
-            stream_index=packet.stream.index,
-            time_base=(packet.time_base.numerator, packet.time_base.denominator),
-            is_keyframe=bool(packet.is_keyframe) if hasattr(packet, 'is_keyframe') else False
-        )
-
-    def demux_with_info(self) -> List[PacketInfo]:
-        """Demux packets and return as PacketInfo objects"""
-        if self.container is None:
-            raise RuntimeError("Container not opened")
-        
-        packets: List[PacketInfo] = []
-        for pkt in self.container.demux(self.container.streams):  # type: ignore[arg-type]
-            packets.append(self.extract_packet_info(pkt))
-        return packets
 
     def demux_streams(self, stream_indices: List[int]) -> Any:
         """Get an iterator for demuxing specific streams"""
@@ -513,14 +389,6 @@ class PyAVBackend(ContainerBackend):
             pkt.stream = stream
             return list(pkt.decode())
 
-    def get_stream_metadata(self, stream_index: int) -> Dict[str, str]:
-        """Get metadata dictionary for a stream"""
-        if stream_index not in self._idx_to_stream:
-            raise ValueError(f"No stream with index {stream_index}")
-        
-        stream = self._idx_to_stream[stream_index]
-        return dict(stream.metadata)
-
     def get_stream_codec_name(self, stream_index: int) -> str:
         """Get the codec name for a stream"""
         if stream_index not in self._idx_to_stream:
@@ -528,14 +396,6 @@ class PyAVBackend(ContainerBackend):
         
         stream = self._idx_to_stream[stream_index]
         return stream.codec_context.codec.name
-
-    def get_feature_type_from_stream(self, stream_index: int) -> Optional[str]:
-        """Get the feature type string from stream metadata"""
-        if stream_index not in self._idx_to_stream:
-            return None
-        
-        stream = self._idx_to_stream[stream_index]
-        return stream.metadata.get("FEATURE_TYPE")
 
     def convert_frame_to_array(self, frame: Any, feature_type: Any, format: str = "rgb24") -> Any:
         """Convert a backend-specific frame to numpy array"""
@@ -683,50 +543,4 @@ class PyAVBackend(ContainerBackend):
         else:
             frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
 
-        return frame
-
-    def encode_data(
-        self,
-        data: Any,
-        stream: "av.stream.Stream",
-        timestamp: int,
-        codec_config: "CodecConfig",
-    ) -> List["av.packet.Packet"]:
-        """Encode arbitrary *data* into packets for *stream* following the
-        original logic of Trajectory._encode_frame.
-        """
-
-        from robodm.feature import FeatureType  # local import to avoid cycles
-
-        encoding = stream.codec_context.codec.name
-        feature_type = FeatureType.from_data(data)
-
-        packets: List[av.Packet]
-
-        if (
-            encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}
-            and feature_type.shape is not None
-            and len(feature_type.shape) >= 2
-        ):
-            frame = self._create_frame(data, stream)
-            frame.time_base = stream.time_base
-            frame.pts = timestamp
-            frame.dts = timestamp
-            packets = list(stream.encode(frame))  # type: ignore[attr-defined]
-        else:
-            # Fallback to pickled rawvideo path
-            import pickle, numpy as _np
-
-            if isinstance(data, _np.ndarray):
-                payload = pickle.dumps(data)
-            else:
-                payload = pickle.dumps(data)
-
-            pkt = av.Packet(payload)
-            pkt.pts = timestamp
-            pkt.dts = timestamp
-            pkt.time_base = stream.time_base
-            pkt.stream = stream
-            packets = [pkt]
-
-        return packets 
+        return frame 
