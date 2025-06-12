@@ -89,6 +89,17 @@ def main():
     print(f"Loaded trajectory with {loaded_num_steps} timesteps")
     print(f"Image shape from robodm: {loaded_data['observation/image'][0].shape}")
     print(f"Loaded keys: {loaded_data.keys()}")
+    
+    # write all images to disk
+    for i in range(loaded_num_steps):
+        from PIL import Image
+        import os
+        os.makedirs("images", exist_ok=True)
+        image = loaded_data["observation/image"][i]
+        image = image.astype(np.uint8)
+        image = Image.fromarray(image)
+        image.save(f"images/image_{i}.png")
+    
     # Compare shapes and number of steps
     assert loaded_num_steps == num_steps
     assert loaded_data["observation/image"][0].shape == original_image_shape

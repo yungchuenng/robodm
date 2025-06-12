@@ -16,304 +16,14 @@ import numpy as np
 
 from robodm import FeatureType
 from robodm.trajectory_base import TrajectoryInterface
-from robodm.utils import recursively_read_hdf5_group
+from robodm.utils import _flatten_dict
 
 logger = logging.getLogger(__name__)
 
 logging.getLogger("libav").setLevel(logging.CRITICAL)
 
-
-def _flatten_dict(d, parent_key="", sep="_"):
-    items = []
-    for k, v in d.items():
-        new_key = parent_key + sep + k if parent_key else k
-        if isinstance(v, dict):
-            items.extend(_flatten_dict(v, new_key, sep=sep).items())
-        else:
-            items.append((new_key, v))
-    return dict(items)
-
-
-class TimeManager:
-    """
-    Comprehensive time management system for robodm trajectories.
-
-    Handles:
-    - Multiple time units (nanoseconds, microseconds, milliseconds, seconds)
-    - Base datetime reference points
-    - Monotonic timestamp enforcement
-    - Unit conversions
-    - Per-timestep timing from base datetime
-    """
-
-    # Time unit conversion factors to nanoseconds
-    TIME_UNITS = {
-        "ns": 1,
-        "nanoseconds": 1,
-        "μs": 1_000,
-        "us": 1_000,
-        "microseconds": 1_000,
-        "ms": 1_000_000,
-        "milliseconds": 1_000_000,
-        "s": 1_000_000_000,
-        "seconds": 1_000_000_000,
-    }
-
-    # Trajectory time base (for robodm compatibility)
-    TRAJECTORY_TIME_BASE = Fraction(1, 1000)  # milliseconds
-
-    def __init__(
-        self,
-        base_datetime: Optional[datetime] = None,
-        time_unit: str = "ms",
-        enforce_monotonic: bool = True,
-    ):
-        """
-        Initialize TimeManager.
-
-        Parameters:
-        -----------
-        base_datetime : datetime, optional
-            Reference datetime for relative timestamps. If None, uses current time.
-        time_unit : str
-            Default time unit for timestamp inputs ('ns', 'μs', 'ms', 's')
-        enforce_monotonic : bool
-            Whether to enforce monotonically increasing timestamps
-        """
-        self.base_datetime = base_datetime or datetime.now(timezone.utc)
-        self.time_unit = time_unit
-        self.enforce_monotonic = enforce_monotonic
-
-        # Internal state
-        self._last_timestamp_ns = 0
-        self._start_time = time.time()
-
-        # Validate time unit
-        if time_unit not in self.TIME_UNITS:
-            raise ValueError(f"Unsupported time unit: {time_unit}. "
-                             f"Supported: {list(self.TIME_UNITS.keys())}")
-
-    def reset(self, base_datetime: Optional[datetime] = None):
-        """Reset the time manager with new base datetime."""
-        if base_datetime:
-            self.base_datetime = base_datetime
-        self._last_timestamp_ns = 0
-        self._start_time = time.time()
-
-    def current_timestamp(self, unit: Optional[str] = None) -> int:
-        """
-        Get current timestamp relative to start time.
-
-        Parameters:
-        -----------
-        unit : str, optional
-            Time unit for returned timestamp. If None, uses default unit.
-
-        Returns:
-        --------
-        int : Current timestamp in specified unit
-        """
-        unit = unit or self.time_unit
-        current_time_ns = int((time.time() - self._start_time) * 1_000_000_000)
-        return self.convert_from_nanoseconds(current_time_ns, unit)
-
-    def datetime_to_timestamp(self,
-                              dt: datetime,
-                              unit: Optional[str] = None) -> int:
-        """
-        Convert datetime to timestamp relative to base_datetime.
-
-        Parameters:
-        -----------
-        dt : datetime
-            Datetime to convert
-        unit : str, optional
-            Target time unit. If None, uses default unit.
-
-        Returns:
-        --------
-        int : Timestamp in specified unit
-        """
-        unit = unit or self.time_unit
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        if self.base_datetime.tzinfo is None:
-            base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
-        else:
-            base_dt = self.base_datetime
-
-        delta_seconds = (dt - base_dt).total_seconds()
-        delta_ns = int(delta_seconds * 1_000_000_000)
-        return self.convert_from_nanoseconds(delta_ns, unit)
-
-    def timestamp_to_datetime(self,
-                              timestamp: int,
-                              unit: Optional[str] = None) -> datetime:
-        """
-        Convert timestamp to datetime using base_datetime as reference.
-
-        Parameters:
-        -----------
-        timestamp : int
-            Timestamp value
-        unit : str, optional
-            Time unit of input timestamp. If None, uses default unit.
-
-        Returns:
-        --------
-        datetime : Corresponding datetime
-        """
-        unit = unit or self.time_unit
-        timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
-        delta_seconds = timestamp_ns / 1_000_000_000
-
-        if self.base_datetime.tzinfo is None:
-            base_dt = self.base_datetime.replace(tzinfo=timezone.utc)
-        else:
-            base_dt = self.base_datetime
-
-        return base_dt + timedelta(seconds=delta_seconds)
-
-    def convert_to_nanoseconds(self, timestamp: Union[int, float],
-                               unit: str) -> int:
-        """Convert timestamp from given unit to nanoseconds."""
-        if unit not in self.TIME_UNITS:
-            raise ValueError(f"Unsupported time unit: {unit}")
-        return int(timestamp * self.TIME_UNITS[unit])
-
-    def convert_from_nanoseconds(self, timestamp_ns: int, unit: str) -> int:
-        """Convert timestamp from nanoseconds to given unit."""
-        if unit not in self.TIME_UNITS:
-            raise ValueError(f"Unsupported time unit: {unit}")
-        return int(timestamp_ns // self.TIME_UNITS[unit])
-
-    def convert_units(self, timestamp: Union[int, float], from_unit: str,
-                      to_unit: str) -> int:
-        """Convert timestamp between different units."""
-        timestamp_ns = self.convert_to_nanoseconds(timestamp, from_unit)
-        return self.convert_from_nanoseconds(timestamp_ns, to_unit)
-
-    def get_last_timestamp(self, unit: Optional[str] = None) -> int:
-        """
-        Get the last timestamp that was used (validated).
-        
-        Parameters:
-        -----------
-        unit : str, optional
-            Time unit for returned timestamp. If None, uses default unit.
-            
-        Returns:
-        --------
-        int : Last used timestamp in specified unit
-        """
-        unit = unit or self.time_unit
-        return self.convert_from_nanoseconds(self._last_timestamp_ns, unit)
-
-    def validate_timestamp(self,
-                           timestamp: int,
-                           unit: Optional[str] = None) -> int:
-        """
-        Validate and potentially adjust timestamp for monotonic ordering.
-
-        Parameters:
-        -----------
-        timestamp : int
-            Input timestamp
-        unit : str, optional
-            Time unit of input timestamp
-
-        Returns:
-        --------
-        int : Validated timestamp in trajectory time base units (milliseconds)
-        """
-        unit = unit or self.time_unit
-        timestamp_ns = self.convert_to_nanoseconds(timestamp, unit)
-
-        if self.enforce_monotonic:
-            if timestamp_ns <= self._last_timestamp_ns:
-                # Adjust to maintain monotonic ordering - add 1ms worth of nanoseconds to ensure difference
-                timestamp_ns = (self._last_timestamp_ns + 1_000_000
-                                )  # +1ms in nanoseconds
-                logger.debug(
-                    f"Adjusted timestamp to maintain monotonic ordering: {timestamp_ns} ns"
-                )
-
-            self._last_timestamp_ns = timestamp_ns
-
-        # Convert to trajectory time base (milliseconds)
-        return self.convert_from_nanoseconds(timestamp_ns, "ms")
-
-    def add_timestep(self,
-                     timestep: Union[int, float],
-                     unit: Optional[str] = None) -> int:
-        """
-        Add a timestep to the last timestamp and return trajectory-compatible timestamp.
-
-        Parameters:
-        -----------
-        timestep : int or float
-            Time step to add
-        unit : str, optional
-            Time unit of timestep
-
-        Returns:
-        --------
-        int : New timestamp in trajectory time base units (milliseconds)
-        """
-        unit = unit or self.time_unit
-        timestep_ns = self.convert_to_nanoseconds(timestep, unit)
-        new_timestamp_ns = self._last_timestamp_ns + timestep_ns
-
-        self._last_timestamp_ns = new_timestamp_ns
-        return self.convert_from_nanoseconds(new_timestamp_ns, "ms")
-
-    def create_timestamp_sequence(
-        self,
-        start_timestamp: int,
-        count: int,
-        timestep: Union[int, float],
-        unit: Optional[str] = None,
-    ) -> List[int]:
-        """
-        Create a sequence of monotonic timestamps.
-
-        Parameters:
-        -----------
-        start_timestamp : int
-            Starting timestamp
-        count : int
-            Number of timestamps to generate
-        timestep : int or float
-            Time step between consecutive timestamps
-        unit : str, optional
-            Time unit for inputs
-
-        Returns:
-        --------
-        List[int] : List of timestamps in trajectory time base units
-        """
-        unit = unit or self.time_unit
-        start_ns = self.convert_to_nanoseconds(start_timestamp, unit)
-        timestep_ns = self.convert_to_nanoseconds(timestep, unit)
-
-        timestamps = []
-        current_ns = start_ns
-
-        for i in range(count):
-            # Ensure monotonic ordering if enforce_monotonic is True
-            if self.enforce_monotonic and current_ns <= self._last_timestamp_ns:
-                current_ns = self._last_timestamp_ns + 1_000_000  # +1ms in nanoseconds
-
-            timestamps.append(self.convert_from_nanoseconds(current_ns, "ms"))
-
-            # Update last timestamp only if monotonic enforcement is enabled
-            if self.enforce_monotonic:
-                self._last_timestamp_ns = current_ns
-
-            current_ns += timestep_ns
-
-        return timestamps
-
+from robodm.codec_config import CodecConfig
+from robodm.time_manager import TimeManager
 
 class StreamInfo:
 
@@ -327,201 +37,6 @@ class StreamInfo:
 
     def __repr__(self):
         return self.__str__()
-
-
-class CodecConfig:
-    """Configuration class for video codec settings."""
-
-    @staticmethod
-    def get_supported_pixel_formats(codec_name: str) -> List[str]:
-        """Get list of supported pixel formats for a codec."""
-        try:
-            import av
-
-            codec = av.codec.Codec(codec_name, "w")
-            if codec.video_formats:
-                return [vf.name for vf in codec.video_formats]
-            return []
-        except Exception:
-            return []
-
-    @staticmethod
-    def is_codec_config_supported(width: int,
-                                  height: int,
-                                  pix_fmt: str = "yuv420p",
-                                  codec_name: str = "libx264") -> bool:
-        """Check if a specific width/height/pixel format combination is supported by codec."""
-        try:
-            from fractions import Fraction
-
-            import av
-
-            cc = av.codec.CodecContext.create(codec_name, "w")
-            cc.width = width
-            cc.height = height
-            cc.pix_fmt = pix_fmt
-            cc.time_base = Fraction(1, 30)
-            cc.open(strict=True)
-            cc.close()
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def is_valid_image_shape(shape: Tuple[int, ...],
-                             codec_name: str = "libx264") -> bool:
-        """Check if a shape can be treated as an RGB image for the given codec."""
-        # Only accept RGB shapes (H, W, 3)
-        if len(shape) != 3 or shape[2] != 3:
-            return False
-
-        height, width = shape[0], shape[1]
-
-        # Check minimum reasonable image size
-        if height < 1 or width < 1:
-            return False
-
-        # Check codec-specific constraints
-        if codec_name in ["libx264", "libx265"]:
-            # H.264/H.265 require even dimensions
-            if height % 2 != 0 or width % 2 != 0:
-                return False
-        elif codec_name in ["libaom-av1"]:
-            # AV1 also typically requires even dimensions for yuv420p
-            if height % 2 != 0 or width % 2 != 0:
-                return False
-
-        # Test if the codec actually supports this resolution
-        return CodecConfig.is_codec_config_supported(width, height, "yuv420p",
-                                                     codec_name)
-
-    # Default codec configurations
-    CODEC_CONFIGS = {
-        "rawvideo": {
-            "pixel_format": None,  # No pixel format for rawvideo (binary)
-            "options": {},
-        },
-        "libx264": {
-            "pixel_format": "yuv420p",
-            "options": {
-                "crf": "23",
-                "preset": "medium"
-            },  # Default quality
-        },
-        "libx265": {
-            "pixel_format": "yuv420p",
-            "options": {
-                "crf": "28",
-                "preset": "medium"
-            },  # Default quality for HEVC
-        },
-        "libaom-av1": {
-            "pixel_format": "yuv420p",
-            "options": {
-                "g": "2",
-                "crf": "30"
-            }
-        },
-        "ffv1": {
-            "pixel_format":
-            "yuv420p",  # Default, will be adjusted based on content
-            "options": {},
-        },
-    }
-
-    def __init__(self,
-                 codec: str = "auto",
-                 options: Optional[Dict[str, Any]] = None):
-        """
-        Initialize codec configuration.
-
-        Args:
-            codec: Video codec to use. Options: "auto", "rawvideo", "libx264", "libx265", "libaom-av1", "ffv1"
-            options: Additional codec-specific options
-        """
-        self.codec = codec
-        self.custom_options = options or {}
-
-        if codec not in ["auto"] and codec not in self.CODEC_CONFIGS:
-            raise ValueError(
-                f"Unsupported codec: {codec}. Supported: {list(self.CODEC_CONFIGS.keys())}"
-            )
-
-    def get_codec_for_feature(self, feature_type: FeatureType) -> str:
-        """Determine the appropriate codec for a given feature type."""
-
-        data_shape = feature_type.shape
-
-        # Only use video codecs for RGB images (H, W, 3)
-        if data_shape is not None and len(
-                data_shape) == 3 and data_shape[2] == 3:
-            height, width = data_shape[0], data_shape[1]
-
-            # If user specified a codec other than auto, try to use it for RGB images
-            if self.codec != "auto":
-                if self.is_valid_image_shape(data_shape, self.codec):
-                    logger.debug(
-                        f"Using user-specified codec {self.codec} for RGB shape {data_shape}"
-                    )
-                    return self.codec
-                else:
-                    logger.warning(
-                        f"User-specified codec {self.codec} doesn't support shape {data_shape}, falling back to rawvideo"
-                    )
-                    return "rawvideo"
-
-            # Auto-selection for RGB images only
-            codec_preferences = ["libaom-av1", "ffv1", "libx264", "libx265"]
-
-            for codec in codec_preferences:
-                if self.is_valid_image_shape(data_shape, codec):
-                    logger.debug(
-                        f"Selected codec {codec} for RGB shape {data_shape}")
-                    return codec
-
-            # If no video codec works for this RGB image, fall back to rawvideo
-            logger.warning(
-                f"No video codec supports RGB shape {data_shape}, falling back to rawvideo"
-            )
-
-        else:
-            # Non-RGB data (grayscale, depth, vectors, etc.) always use rawvideo
-            if data_shape is not None:
-                logger.debug(f"Using rawvideo for non-RGB shape {data_shape}")
-
-        return "rawvideo"
-
-    def get_pixel_format(self, codec: str,
-                         feature_type: FeatureType) -> Optional[str]:
-        """Get appropriate pixel format for codec and feature type."""
-        if codec not in self.CODEC_CONFIGS:
-            return None
-
-        codec_config = cast(Dict[str, Any], self.CODEC_CONFIGS[codec])
-        base_format = codec_config.get("pixel_format")
-        if base_format is None:  # rawvideo case
-            return None
-
-        # Only use RGB formats for actual RGB data (H, W, 3)
-        shape = feature_type.shape
-        if shape is not None and len(shape) == 3 and shape[2] == 3:
-            # RGB data - use appropriate RGB format
-            return ("yuv420p" if codec in [
-                "libx264", "libx265", "libaom-av1", "ffv1"
-            ] else "rgb24")
-        else:
-            # Non-RGB data should not get video pixel formats
-            return None
-
-    def get_codec_options(self, codec: str) -> Dict[str, Any]:
-        """Get codec options, merging defaults with custom options."""
-        if codec not in self.CODEC_CONFIGS:
-            return self.custom_options
-
-        codec_config = cast(Dict[str, Any], self.CODEC_CONFIGS[codec])
-        options = codec_config.get("options", {}).copy()
-        options.update(self.custom_options)
-        return options
 
 
 class Trajectory(TrajectoryInterface):
@@ -698,10 +213,6 @@ class Trajectory(TrajectoryInterface):
         has_data = len(self.container_file.streams) > 0
 
         try:
-            # Use TimeManager for consistent timestamps instead of _get_current_timestamp
-            ts_ms = self.time_manager.get_last_timestamp("ms")
-            logger.debug(f"Final timestamp from TimeManager: {ts_ms} milliseconds")
-
             for i, stream in enumerate(self.container_file.streams):
                 logger.debug(f"Flushing stream {i}: {stream}")
                 try:
@@ -709,8 +220,9 @@ class Trajectory(TrajectoryInterface):
                     logger.debug(
                         f"Stream {i} flush returned {len(packets)} packets")
                     for j, packet in enumerate(packets):
-                        packet.pts = ts_ms
-                        packet.dts = ts_ms
+                        if packet.pts is None or packet.dts is None:
+                            raise ValueError(f"Packet {packet} has no pts or dts")
+                            
                         if self.container_file is not None:
                             self.container_file.mux(packet)
                             logger.debug(
@@ -739,7 +251,7 @@ class Trajectory(TrajectoryInterface):
                 and os.path.getsize(self.path) > 0):
             logger.debug("Starting transcoding of pickled images")
             try:
-                self._transcode_pickled_images(ending_timestamp=ts_ms)
+                self._transcode_pickled_images()
             except Exception as e:
                 logger.warning(
                     f"Transcoding failed: {e}. Keeping original file with pickled data."
@@ -1234,8 +746,7 @@ class Trajectory(TrajectoryInterface):
         if timestamp is None:
             validated_timestamp = self.time_manager.current_timestamp("ms")
         else:
-            validated_timestamp = self.time_manager.validate_timestamp(
-                timestamp, time_unit)
+            validated_timestamp = self.time_manager.convert_units(timestamp, time_unit, "ms")
 
         logger.debug(
             f"Encoding frame with validated timestamp: {validated_timestamp}")
@@ -1286,8 +797,7 @@ class Trajectory(TrajectoryInterface):
         if timestamp is None:
             validated_timestamp = self.time_manager.current_timestamp("ms")
         else:
-            validated_timestamp = self.time_manager.validate_timestamp(
-                timestamp, time_unit)
+            validated_timestamp = self.time_manager.convert_units(timestamp, time_unit, "ms")
 
         for feature, value in _flatten_dict_data.items():
             self.add(feature, value, validated_timestamp, "ms")
@@ -1300,6 +810,7 @@ class Trajectory(TrajectoryInterface):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
+        fps: Optional[int] = 10,
     ) -> "Trajectory":
         """
         Create a Trajectory object from a list of dictionaries.
@@ -1326,8 +837,12 @@ class Trajectory(TrajectoryInterface):
                    visualization_feature=visualization_feature)
         logger.info(
             f"Creating a new trajectory file at {path} with {len(data)} steps")
+        
+        time_interval_ms = 1000 / fps
+        current_timestamp = 0
         for step in data:
-            traj.add_by_dict(step)
+            traj.add_by_dict(step, current_timestamp, time_unit="ms")
+            current_timestamp += time_interval_ms
         traj.close()
         return traj
 
@@ -1340,6 +855,7 @@ class Trajectory(TrajectoryInterface):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
+        fps: Optional[int] = 10,
     ) -> "Trajectory":
         """
         Create a Trajectory object from a dictionary of lists.
@@ -1371,6 +887,8 @@ class Trajectory(TrajectoryInterface):
             codec_options=codec_options,
             visualization_feature=visualization_feature,
         )
+        time_interval_ms = 1000 / fps
+        current_timestamp = 0
         # flatten the data such that all data starts and put feature name with separator
         _flatten_dict_data = _flatten_dict(data,
                                            sep=traj.feature_name_separator)
@@ -1385,7 +903,8 @@ class Trajectory(TrajectoryInterface):
 
         for i in range(list_lengths[0]):
             step = {k: v[i] for k, v in _flatten_dict_data.items()}
-            traj.add_by_dict(step)
+            traj.add_by_dict(step, current_timestamp, time_unit="ms")
+            current_timestamp += time_interval_ms
         traj.close()
         return traj
 
@@ -1616,7 +1135,7 @@ class Trajectory(TrajectoryInterface):
                             new_packets = self._encode_frame(
                                 data, new_stream, pts_timestamp)
                             for new_packet in new_packets:
-                                logger.debug(
+                                print(
                                     f"Muxing transcoded packet: {new_packet}")
                                 new_container.mux(new_packet)
                                 packets_muxed += 1
@@ -1630,6 +1149,7 @@ class Trajectory(TrajectoryInterface):
                     else:
                         # If not a rawvideo stream, just remux the existing packet
                         logger.debug(f"Remuxing original packet: {packet}")
+                        print("muxing packet: ", packet)
                         new_container.mux(packet)
                         packets_muxed += 1
                 else:
@@ -1644,15 +1164,18 @@ class Trajectory(TrajectoryInterface):
                     flush_packets = stream.encode(
                         None)  # type: ignore[attr-defined]
                     logger.debug(
-                        f"Stream flush returned {len(flush_packets)} packets")
+                        f"Stream {stream.index} flush returned {len(flush_packets)} packets")
+                    print(f"stream {stream.index} flush packets: {flush_packets}")
                     for packet in flush_packets:
-                        packet.pts = ending_timestamp
-                        packet.dts = ending_timestamp
+                        if packet.pts is None or packet.dts is None:
+                            raise ValueError(f"Packet {packet} has no pts or dts")
                         logger.debug(f"Muxing flush packet: {packet}")
                         new_container.mux(packet)
                         packets_muxed += 1
                 except Exception as e:
                     logger.error(f"Error flushing stream {stream}: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             logger.debug(f"Total packets muxed: {packets_muxed}")
 
@@ -1694,9 +1217,9 @@ class Trajectory(TrajectoryInterface):
             logger.debug("Using video encoding path for image-like data")
             # Always use RGB frame creation, no special handling for float32
             frame = self._create_frame(data, stream)
+            frame.time_base = stream.time_base
             frame.pts = timestamp
             frame.dts = timestamp
-            frame.time_base = stream.time_base
             logger.debug(f"Created frame: pts={frame.pts}, dts={frame.dts}")
             packets = stream.encode(frame)  # type: ignore[attr-defined]
             logger.debug(f"Stream encode returned {len(packets)} packets")
@@ -1716,13 +1239,6 @@ class Trajectory(TrajectoryInterface):
             logger.debug(f"Created raw packet: size={len(bytes(packet))}")
 
             packets = [packet]
-
-        for (
-                packet_item
-        ) in packets:  # renamed to avoid conflict with outer scope 'packet'
-            packet_item.pts = timestamp
-            packet_item.dts = timestamp
-            packet_item.time_base = stream.time_base
 
         logger.debug(f"Returning {len(packets)} packets")
         return packets
@@ -1872,7 +1388,6 @@ class Trajectory(TrajectoryInterface):
         else:
             frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
 
-        frame.time_base = stream.time_base
         return frame
 
     def _create_frame_depth(self, image_array, stream):
