@@ -10,6 +10,10 @@ import robodm
 # Prevent tensorflow from allocating GPU memory
 tf.config.set_visible_devices([], "GPU")
 
+import logging
+logging.basicConfig(level=logging.DEBUG)
+logging.getLogger("robodm").setLevel(logging.DEBUG)
+
 
 def main():
     """

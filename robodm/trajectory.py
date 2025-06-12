@@ -18,6 +18,10 @@ from robodm import FeatureType
 from robodm.trajectory_base import TrajectoryInterface
 from robodm.utils import _flatten_dict
 
+# Backend abstraction
+from robodm.backend.pyav_backend import PyAVBackend
+from robodm.backend.base import ContainerBackend
+
 logger = logging.getLogger(__name__)
 
 logging.getLogger("libav").setLevel(logging.CRITICAL)
@@ -54,6 +58,7 @@ class Trajectory(TrajectoryInterface):
         time_unit: str = "ms",
         enforce_monotonic: bool = True,
         visualization_feature: Optional[Text] = None,
+        backend: Optional[ContainerBackend] = None,
     ) -> None:
         """
         Args:
@@ -71,6 +76,7 @@ class Trajectory(TrajectoryInterface):
             enforce_monotonic: Whether to enforce monotonically increasing timestamps
             visualization_feature: Optional feature name to prioritize as first stream for visualization.
                 If None, automatically puts video-encoded streams first during compacting.
+            backend: Optional container backend for dependency injection
         """
         self.path = path
         self.feature_name_separator = feature_name_separator
@@ -114,21 +120,33 @@ class Trajectory(TrajectoryInterface):
             [])  # List to keep track of pending write tasks
         self.container_file: Optional[Any] = None  # av.OutputContainer or None
 
+        # ------------------------------------------------------------------ #
+        # Container backend setup
+        # ------------------------------------------------------------------ #
+        self.backend: ContainerBackend = backend or PyAVBackend()
+
         # check if the path exists
         # if not, create a new file and start data collection
         if self.mode == "w":
             if not self._exists(self.path):
                 self._makedirs(os.path.dirname(self.path), exist_ok=True)
             try:
-                self.container_file = av.open(self.path,
-                                              mode="w",
-                                              format="matroska")
+                # Use backend to open the container so that the rest of the
+                # class can keep using `self.container_file` (PyAV Container).
+                self.backend.open(self.path, "w")
+                # Expose underlying PyAV container for legacy code paths that
+                # access it directly.
+                self.container_file = getattr(self.backend, "container", None)
             except Exception as e:
                 logger.error(f"error creating the trajectory file: {e}")
                 raise
         elif self.mode == "r":
             if not self._exists(self.path):
                 raise FileNotFoundError(f"{self.path} does not exist")
+            # Open the backend in read mode now so that subsequent operations
+            # can reuse the container without touching PyAV directly here.
+            self.backend.open(self.path, "r")
+            self.container_file = getattr(self.backend, "container", None)
         else:
             raise ValueError(f"Invalid mode {self.mode}, must be 'r' or 'w'")
 
@@ -203,47 +221,39 @@ class Trajectory(TrajectoryInterface):
             return
 
         # Write mode handling
-        if not hasattr(self, "container_file") or self.container_file is None:
+        if self.backend.container is None:
             logger.warning(
-                "Container file not available, marking trajectory as closed")
+                "Container not available, marking trajectory as closed")
             self.is_closed = True
             return
 
         # Check if there are any streams with data
-        has_data = len(self.container_file.streams) > 0
+        streams = self.backend.get_streams()
+        has_data = len(streams) > 0
 
         try:
-            for i, stream in enumerate(self.container_file.streams):
-                logger.debug(f"Flushing stream {i}: {stream}")
-                try:
-                    packets = stream.encode(None)  # type: ignore[attr-defined]
-                    logger.debug(
-                        f"Stream {i} flush returned {len(packets)} packets")
-                    for j, packet in enumerate(packets):
-                        if packet.pts is None or packet.dts is None:
-                            raise ValueError(f"Packet {packet} has no pts or dts")
-                            
-                        if self.container_file is not None:
-                            self.container_file.mux(packet)
-                            logger.debug(
-                                f"Muxed flush packet {j} from stream {i}")
-                        else:
-                            raise RuntimeError(
-                                "Container file is None, cannot mux packet")
-                except Exception as e:
-                    logger.error(f"Error flushing stream {stream}: {e}")
-            logger.debug("Flushing the container file")
-        except av.error.EOFError:
-            logger.debug("Got EOFError during flush (expected)")
-            pass  # This exception is expected and means the encoder is fully flushed
+            # Flush all streams using backend abstraction
+            buffered_packets = self.backend.flush_all_streams()
+            logger.debug(f"Flushed {len(buffered_packets)} buffered packets")
+            
+            # Mux all buffered packets
+            for packet_info in buffered_packets:
+                if packet_info.pts is None:
+                    raise ValueError(f"Packet {packet_info} has no pts")
+                self.backend.mux_packet_info(packet_info)
+                logger.debug(f"Muxed flush packet from stream {packet_info.stream_index}")
+                
+            logger.debug("Flushing completed")
+        except Exception as e:
+            logger.error(f"Error during flush: {e}")
 
-        logger.debug("Closing container file")
-        self.container_file.close()
+        logger.debug("Closing container")
+        self.backend.close()
 
-        # Ensure file exists even if empty - the container file should create it
+        # Ensure file exists even if empty
         if not self._exists(self.path):
             logger.warning(
-                f"Container file was closed but {self.path} doesn't exist. This might indicate an issue."
+                f"Container was closed but {self.path} doesn't exist. This might indicate an issue."
             )
 
         # Only attempt transcoding if file exists, has content, and compact is requested
@@ -363,8 +373,12 @@ class Trajectory(TrajectoryInterface):
         # ------------------------------------------------------------------ #
         # Open the container and, if possible, seek() to the first slice index
         # ------------------------------------------------------------------ #
-        logger.debug(f"Opening container file: {self.path}")
-        container = av.open(self.path, mode="r", format="matroska")
+        # Ensure backend has the container open (read mode).
+        if self.backend.container is None:
+            self.backend.open(self.path, "r")
+
+        container = self.backend.container  # type: ignore[assignment]
+        logger.debug(f"Using backend container with {len(container.streams)} streams")
         streams = list(container.streams)
 
         logger.debug(f"Container opened with {len(streams)} streams")
@@ -373,6 +387,8 @@ class Trajectory(TrajectoryInterface):
         if not streams:
             logger.debug("No streams found in container, returning empty dict")
             container.close()
+            if hasattr(self.backend, "container"):
+                self.backend.container = None  # type: ignore[attr-defined]
             return {}
 
         # Track if we performed seeking to adjust slice logic
@@ -454,6 +470,8 @@ class Trajectory(TrajectoryInterface):
             logger.debug(
                 "No valid feature streams found, returning empty dict")
             container.close()
+            if hasattr(self.backend, "container"):
+                self.backend.container = None  # type: ignore[attr-defined]
             return {}
 
         logger.debug(f"Processing {stream_count} feature streams")
@@ -485,12 +503,10 @@ class Trajectory(TrajectoryInterface):
             if fname is None or fname in done:
                 continue
 
-            # PyAV sometimes returns "dummy" packets whose pts / dts is None
-            # (e.g. after a flush or if the stream has no real data).  They
-            # must be skipped before any timing logic.
-            if packet.pts is None:
+            # Use backend's packet validation
+            if not self.backend.validate_packet(packet):
                 logger.debug(
-                    f"Skipping packet with None pts for feature '{fname}'")
+                    f"Skipping invalid packet for feature '{fname}'")
                 continue
 
             processed_packets += 1
@@ -640,6 +656,8 @@ class Trajectory(TrajectoryInterface):
                 decoded_packets += 1
 
         container.close()
+        if hasattr(self.backend, "container"):
+            self.backend.container = None  # type: ignore[attr-defined]
 
         logger.debug(
             f"Demux/decode loop completed: total_packets={packet_count}, processed={processed_packets}, "
@@ -1029,154 +1047,56 @@ class Trajectory(TrajectoryInterface):
         """
         Transcode pickled images into the desired format (e.g., raw or encoded images).
         """
+        from robodm.backend.base import StreamConfig
+        from robodm.backend.pyav_backend import PyAVBackend
 
         # Move the original file to a temporary location
         temp_path = self.path + ".temp"
         self._rename(self.path, temp_path)
 
         try:
-            # Open the original container for reading
-            original_container = av.open(temp_path,
-                                         mode="r",
-                                         format="matroska")
-            original_streams = list(original_container.streams)
-
-            # Create a new container
-            new_container = av.open(self.path, mode="w", format="matroska")
-
-            # Sort streams to prioritize visualization feature
-            def get_stream_priority(stream):
-                feature_name = stream.metadata.get("FEATURE_NAME")
-                if feature_name is None:
-                    return (3, 0)  # Skip invalid streams
-                
-                # Highest priority: specified visualization_feature
-                if self.visualization_feature and feature_name == self.visualization_feature:
-                    return (0, 0)
-                
-                # Second priority: streams that will become video-encoded (non-rawvideo) after transcoding
-                feature_type = self.feature_name_to_feature_type.get(feature_name)
-                if feature_type:
-                    target_encoding = self._get_encoding_of_feature(None, feature_type)
-                    if target_encoding != "rawvideo":
-                        return (1, 0)
-                
-                # Third priority: everything else (will remain rawvideo streams)
-                return (2, stream.index)
+            # Build stream configurations for transcoding
+            stream_configs = {}
             
-            # Sort streams by priority
-            sorted_streams = sorted(original_streams, key=get_stream_priority)
-            logger.debug(f"Stream ordering: {[(s.metadata.get('FEATURE_NAME'), s.codec_context.codec.name) for s in sorted_streams]}")
-
-            # Add existing streams to the new container in sorted order
-            d_original_stream_id_to_new_container_stream = {}
-            for stream in sorted_streams:
-                stream_feature = stream.metadata.get("FEATURE_NAME")
-                if stream_feature is None:
-                    logger.debug(
-                        f"Skipping stream without FEATURE_NAME: {stream}")
+            # Open original container temporarily to get stream info
+            temp_backend = PyAVBackend()
+            temp_backend.open(temp_path, "r")
+            original_streams = temp_backend.get_streams()
+            temp_backend.close()
+            
+            for stream_metadata in original_streams:
+                feature_name = stream_metadata.feature_name
+                if feature_name == "unknown" or not feature_name:
                     continue
+                    
+                feature_type = self.feature_name_to_feature_type.get(feature_name)
+                if feature_type is None:
+                    continue
+                
+                # Determine target encoding
+                target_encoding = self._get_encoding_of_feature(None, feature_type)
+                
+                # Create stream config
+                config = StreamConfig(
+                    feature_name=feature_name,
+                    feature_type=feature_type,
+                    encoding=target_encoding,
+                    codec_options=self.codec_config.get_codec_options(target_encoding),
+                    pixel_format=self.codec_config.get_pixel_format(target_encoding, feature_type),
+                )
+                
+                # Use a dummy stream index as key - the backend will handle mapping
+                stream_configs[len(stream_configs)] = config
 
-                # Determine encoding method based on feature type
-                try:
-                    stream_encoding = self._get_encoding_of_feature(
-                        None,
-                        self.feature_name_to_feature_type[stream_feature])
-                    stream_feature_type = self.feature_name_to_feature_type[
-                        stream_feature]
-                    stream_in_updated_container = self._add_stream_to_container(
-                        new_container,
-                        stream_feature,
-                        stream_encoding,
-                        stream_feature_type,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to create stream for {stream_feature} with desired encoding, falling back to rawvideo: {e}"
-                    )
-                    # Fallback to rawvideo if the desired codec is not available
-                    stream_in_updated_container = self._add_stream_to_container(
-                        new_container,
-                        stream_feature,
-                        "rawvideo",
-                        self.feature_name_to_feature_type[stream_feature],
-                    )
+            # Use backend's transcoding abstraction
+            self.backend.transcode_container(
+                input_path=temp_path,
+                output_path=self.path,
+                stream_configs=stream_configs,
+                visualization_feature=self.visualization_feature
+            )
 
-                # Preserve the stream metadata
-                for key, value in stream.metadata.items():
-                    stream_in_updated_container.metadata[key] = value
-
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container)
-
-            # Transcode pickled images and add them to the new container
-            packets_muxed = 0
-            for packet in original_container.demux(original_streams):
-
-                def is_packet_valid(packet):
-                    return packet.pts is not None and packet.dts is not None
-
-                if is_packet_valid(packet):
-                    original_stream = packet.stream
-                    new_stream = d_original_stream_id_to_new_container_stream[
-                        packet.stream.index]
-                    packet.stream = new_stream
-
-                    # Check if the ORIGINAL stream is using rawvideo, meaning it's a pickled stream
-                    if original_stream.codec_context.codec.name == "rawvideo":
-                        logger.debug(
-                            f"Transcoding rawvideo packet from {original_stream.metadata.get('FEATURE_NAME')}"
-                        )
-                        data = pickle.loads(bytes(packet))
-
-                        # Encode the image data with the new stream's encoding
-                        try:
-                            pts_timestamp = packet.pts if packet.pts is not None else 0
-                            new_packets = self._encode_frame(
-                                data, new_stream, pts_timestamp)
-                            for new_packet in new_packets:
-                                logger.debug(
-                                    f"Muxing transcoded packet: {new_packet}")
-                                new_container.mux(new_packet)
-                                packets_muxed += 1
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to encode {original_stream.metadata.get('FEATURE_NAME')} with {new_stream.codec_context.codec.name}, keeping as pickled data: {e}"
-                            )
-                            # If encoding fails, keep the original pickled packet
-                            new_container.mux(packet)
-                            packets_muxed += 1
-                    else:
-                        # If not a rawvideo stream, just remux the existing packet
-                        logger.debug(f"Remuxing original packet: {packet}")
-                        new_container.mux(packet)
-                        packets_muxed += 1
-                else:
-                    logger.debug(f"Skipping invalid packet: {packet}")
-
-            logger.debug(f"Muxed {packets_muxed} packets during transcoding")
-
-            # Flush all streams to get any buffered packets
-            for stream in new_container.streams:
-                logger.debug(f"Flushing stream during transcode: {stream}")
-                try:
-                    flush_packets = stream.encode(
-                        None)  # type: ignore[attr-defined]
-                    logger.debug(
-                        f"Stream {stream.index} flush returned {len(flush_packets)} packets")
-                    for packet in flush_packets:
-                        if packet.pts is None or packet.dts is None:
-                            raise ValueError(f"Packet {packet} has no pts or dts")
-                        logger.debug(f"Muxing flush packet: {packet}")
-                        new_container.mux(packet)
-                        packets_muxed += 1
-                except Exception as e:
-                    logger.error(f"Error flushing stream {stream}: {e}")
-
-            logger.debug(f"Total packets muxed: {packets_muxed}")
-
-            original_container.close()
-            new_container.close()
+            logger.debug("Transcoding completed successfully")
             self._remove(temp_path)
 
         except Exception as e:
@@ -1198,48 +1118,37 @@ class Trajectory(TrajectoryInterface):
             stream: stream to write the frame
             timestamp: timestamp of the frame
         return:
-            packet: encoded packet
+            packet: encoded packet (for backwards compatibility)
         """
-        encoding = stream.codec_context.codec.name
-        feature_type = FeatureType.from_data(data)
         logger.debug(
-            f"Encoding {stream.metadata.get('FEATURE_NAME')} with {encoding}, feature_type: {feature_type}"
+            f"Encoding data for feature {stream.metadata.get('FEATURE_NAME')} at timestamp {timestamp}"
         )
 
-        # For video codecs, only attempt to create video frames if data is image-like (2D or 3D)
-        shape = feature_type.shape
-        if (encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]
-                and shape is not None and len(shape) >= 2):
-            logger.debug("Using video encoding path for image-like data")
-            # Always use RGB frame creation, no special handling for float32
-            frame = self._create_frame(data, stream)
-            frame.time_base = stream.time_base
-            frame.pts = timestamp
-            frame.dts = timestamp
-            logger.debug(f"Created frame: pts={frame.pts}, dts={frame.dts}")
-            packets = stream.encode(frame)  # type: ignore[attr-defined]
-            logger.debug(f"Stream encode returned {len(packets)} packets")
-        else:
-            if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
-                logger.debug(
-                    f"Data is not image-like (shape: {shape}). Using rawvideo (pickling) path for this packet despite stream encoding being {encoding}."
-                )
-            else:
-                logger.debug("Using rawvideo encoding path")
+        # Use the new backend abstraction
+        packet_infos = self.backend.encode_data_to_packets(
+            data=data,
+            stream_index=stream.index,
+            timestamp=timestamp,
+            codec_config=self.codec_config,
+        )
 
-            packet = av.Packet(pickle.dumps(data))
-            packet.dts = timestamp
-            packet.pts = timestamp
-            packet.time_base = stream.time_base
-            packet.stream = stream
-            logger.debug(f"Created raw packet: size={len(bytes(packet))}")
-
-            packets = [packet]
-
-        logger.debug(f"Returning {len(packets)} packets")
+        logger.debug(f"Backend returned {len(packet_infos)} packet infos")
+        
+        # Convert PacketInfo back to av.Packet for backwards compatibility
+        packets = []
+        for packet_info in packet_infos:
+            pkt = av.Packet(packet_info.data)
+            pkt.pts = packet_info.pts
+            pkt.dts = packet_info.dts
+            pkt.time_base = Fraction(*packet_info.time_base)
+            pkt.stream = stream
+            packets.append(pkt)
+        
         return packets
 
     def _on_new_stream(self, new_feature, new_encoding, new_feature_type):
+        from robodm.backend.base import StreamConfig
+        
         if new_feature in self.feature_name_to_stream:
             return
 
@@ -1260,85 +1169,89 @@ class Trajectory(TrajectoryInterface):
             temp_path = self.path + ".temp"
             self._rename(self.path, temp_path)
 
-            # Open the original container for reading
-            original_container = av.open(temp_path,
-                                         mode="r",
-                                         format="matroska")
-            original_streams = list(original_container.streams)
+            # Build stream configurations for existing streams
+            existing_stream_configs = []
+            for feature_name, stream in self.feature_name_to_stream.items():
+                if feature_name == new_feature:
+                    continue  # Skip the new feature we're adding
+                feature_type = self.feature_name_to_feature_type[feature_name]
+                encoding = stream.codec_context.codec.name
+                config = StreamConfig(
+                    feature_name=feature_name,
+                    feature_type=feature_type,
+                    encoding=encoding
+                )
+                existing_stream_configs.append((stream.index, config))
 
-            # Create a new container
-            new_container = av.open(self.path, mode="w", format="matroska")
+            # Add new stream configuration
+            new_stream_config = StreamConfig(
+                feature_name=new_feature,
+                feature_type=new_feature_type,
+                encoding=new_encoding
+            )
 
-            # Add existing streams to the new container
-            d_original_stream_id_to_new_container_stream = {}
-            for stream in original_streams:
-                stream_feature = stream.metadata.get("FEATURE_NAME")
-                if stream_feature is None:
-                    logger.debug(
-                        f"Skipping stream without FEATURE_NAME: {stream}")
-                    continue
-                stream_encoding = stream.codec_context.codec.name
-                stream_feature_type = self.feature_name_to_feature_type[
-                    stream_feature]
-                stream_in_updated_container = self._add_stream_to_container(
-                    new_container, stream_feature, stream_encoding,
-                    stream_feature_type)
-                # new_stream.options = stream.options
-                for key, value in stream.metadata.items():
-                    stream_in_updated_container.metadata[key] = value
-                d_original_stream_id_to_new_container_stream[stream.index] = (
-                    stream_in_updated_container)
+            # Use backend's container recreation abstraction
+            stream_mapping = self.backend.create_container_with_new_streams(
+                original_path=temp_path,
+                new_path=self.path,
+                existing_streams=existing_stream_configs,
+                new_stream_configs=[new_stream_config]
+            )
 
-            # Add new feature stream
-            new_stream = self._add_stream_to_container(new_container,
-                                                       new_feature,
-                                                       new_encoding,
-                                                       new_feature_type)
-            d_original_stream_id_to_new_container_stream[
-                new_stream.index] = new_stream
-            self.stream_id_to_info[new_stream.index] = StreamInfo(
-                new_feature, new_feature_type, new_encoding)
+            # Update our tracking structures
+            # The backend has already updated container and _idx_to_stream
+            self.container_file = self.backend.container
+            
+            # Update feature_name_to_stream mapping
+            new_feature_name_to_stream = {}
+            for stream_idx, stream in self.backend._idx_to_stream.items():
+                feature_name = stream.metadata.get("FEATURE_NAME")
+                if feature_name:
+                    new_feature_name_to_stream[feature_name] = stream
+                    
+            self.feature_name_to_stream = new_feature_name_to_stream
+            
+            # Update stream info
+            for stream_idx, stream in self.backend._idx_to_stream.items():
+                feature_name = stream.metadata.get("FEATURE_NAME")
+                if feature_name:
+                    feature_type = self.feature_name_to_feature_type.get(feature_name)
+                    encoding = stream.codec_context.codec.name
+                    if feature_type:
+                        self.stream_id_to_info[stream_idx] = StreamInfo(
+                            feature_name, feature_type, encoding)
 
-            # Remux existing packets
-            for packet in original_container.demux(original_streams):
-
-                def is_packet_valid(packet):
-                    return packet.pts is not None and packet.dts is not None
-
-                if is_packet_valid(packet):
-                    packet.stream = d_original_stream_id_to_new_container_stream[
-                        packet.stream.index]
-                    new_container.mux(packet)
-                else:
-                    pass
-
-            original_container.close()
             self._remove(temp_path)
-
-            # Reopen the new container for writing new data
-            self.container_file = new_container
-            self.feature_name_to_stream[new_feature] = new_stream
             self.is_closed = False
 
     def _add_stream_to_container(self, container, feature_name, encoding,
                                  feature_type):
+        # If we're adding to the primary container that the backend manages,
+        # delegate to backend. Otherwise fall back to the internal PyAV logic
+        # because the backend is not aware of this ad-hoc container.
+
+        if hasattr(self.backend, "container") and container is getattr(self.backend, "container", None):
+            return self.backend.add_stream_for_feature(
+                feature_name=feature_name,
+                feature_type=feature_type,
+                codec_config=self.codec_config,
+                encoding=encoding,
+            )
+
+        # Legacy path – keep the original PyAV-based implementation for
+        # transient containers (e.g. during transcoding).
         stream = container.add_stream(encoding)
 
-        # Configure stream based on encoding type
         if encoding in ["ffv1", "libaom-av1", "libx264", "libx265"]:
-            # Only set width/height if shape is 2D or more (image/video like)
             shape = feature_type.shape
             if shape is not None and len(shape) >= 2:
                 stream.width = shape[1]
                 stream.height = shape[0]
 
-            # Set pixel format based on codec and feature type
-            pixel_format = self.codec_config.get_pixel_format(
-                encoding, feature_type)
+            pixel_format = self.codec_config.get_pixel_format(encoding, feature_type)
             if pixel_format:
                 stream.pix_fmt = pixel_format
 
-            # Set codec-specific options
             codec_options = self.codec_config.get_codec_options(encoding)
             if codec_options:
                 stream.codec_context.options = codec_options
@@ -1348,64 +1261,7 @@ class Trajectory(TrajectoryInterface):
         stream.time_base = Fraction(1, 1000)
         return stream
 
-    def _create_frame(self, image_array, stream):
-        image_array = np.array(image_array)
-        encoding = stream.codec_context.codec.name
 
-        # Convert to uint8 if needed
-        if image_array.dtype == np.float32:
-            # Assume float32 values are in [0, 1] range, scale to [0, 255]
-            image_array = np.clip(image_array * 255, 0, 255).astype(np.uint8)
-        elif image_array.dtype != np.uint8:
-            # Convert other dtypes to uint8
-            if np.issubdtype(image_array.dtype, np.integer):
-                # For integer types, clamp to 0-255 range
-                image_array = np.clip(image_array, 0, 255).astype(np.uint8)
-            else:
-                # For other types, normalize and convert
-                image_array = np.clip(image_array * 255, 0,
-                                      255).astype(np.uint8)
-
-        # Only handle RGB images (HxWx3) - no grayscale conversion
-        if len(image_array.shape) == 3 and image_array.shape[2] == 3:
-            # RGB image - proceed with video encoding
-            pass
-        else:
-            raise ValueError(
-                f"Video codecs only support RGB images with shape (H, W, 3). "
-                f"Got shape {image_array.shape}. Use rawvideo encoding for other formats."
-            )
-
-        # Create RGB frame
-        if encoding in ["libaom-av1", "ffv1", "libx264", "libx265"]:
-            # For video codecs that prefer YUV, convert RGB to YUV420p
-            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
-            frame = frame.reformat(format="yuv420p")
-        else:
-            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
-
-        return frame
-
-    def _create_frame_depth(self, image_array, stream):
-        image_array = np.array(image_array)
-
-        # Convert float32 to uint8 if needed
-        if image_array.dtype == np.float32:
-            image_array = (image_array * 255).astype(np.uint8)
-
-        # Handle different shapes
-        if len(image_array.shape) == 3:
-            # If 3D, take the first channel or average if it's RGB
-            if image_array.shape[2] == 3:
-                # Convert RGB to grayscale
-                image_array = np.mean(image_array, axis=2).astype(np.uint8)
-            else:
-                # Take the first channel
-                image_array = image_array[:, :, 0]
-
-        frame = av.VideoFrame.from_ndarray(image_array, format="gray")
-        frame.time_base = stream.time_base
-        return frame
 
     def _get_encoding_of_feature(self, feature_value: Any,
                                  feature_type: Optional[FeatureType]) -> Text:
@@ -1421,13 +1277,3 @@ class Trajectory(TrajectoryInterface):
             feature_type = FeatureType.from_data(feature_value)
 
         return self.codec_config.get_codec_for_feature(feature_type)
-
-    def save_stream_info(self):
-        # serialize and save the stream info
-        with open(self.path + ".stream_info", "wb") as f:
-            pickle.dump(self.stream_id_to_info, f)
-
-    def load_stream_info(self):
-        # load the stream info
-        with open(self.path + ".stream_info", "rb") as f:
-            self.stream_id_to_info = pickle.load(f)
