@@ -16,7 +16,7 @@ import numpy as np
 
 from robodm import FeatureType
 from robodm.trajectory_base import TrajectoryInterface
-from robodm.utils import _flatten_dict
+from robodm.utils.flatten import _flatten_dict
 
 # Backend abstraction
 from robodm.backend.pyav_backend import PyAVBackend
@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger("libav").setLevel(logging.CRITICAL)
 
 from robodm.backend.codec_config import CodecConfig
-from robodm.time_manager import TimeManager
-from robodm.resampler import FrequencyResampler
+from robodm.utils.time_manager import TimeManager
+from robodm.utils.resampler import FrequencyResampler
 
 class Trajectory(TrajectoryInterface):
 

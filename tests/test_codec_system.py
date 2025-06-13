@@ -287,6 +287,11 @@ class TestCodecManager:
         clear_codec_cache()
         register_codec("test_raw", MockRawCodec)
         register_codec("test_video", MockVideoCodec)
+        # Register video codecs with their actual names for testing
+        register_codec("libx264", MockVideoCodec)
+        register_codec("libx265", MockVideoCodec)
+        register_codec("libaom-av1", MockVideoCodec)
+        register_codec("ffv1", MockVideoCodec)
         self.manager = CodecManager()
         self.mock_config = Mock()
         self.mock_config.get_raw_codec_name.return_value = "test_raw"
