@@ -689,6 +689,7 @@ class Trajectory(TrajectoryInterface):
         # here we enforce rawvideo encoding for all features
         # later on the compacting step, we will encode the pickled data to images
         stream_idx = self.backend.stream_exists_by_feature(feature)
+        logger.info(f"Stream index for feature {feature}: {stream_idx}")
         if stream_idx is None:
             logger.debug(f"Creating new stream for feature: {feature}")
             self._on_new_stream(feature, "rawvideo", feature_type)

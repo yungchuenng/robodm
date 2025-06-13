@@ -123,9 +123,7 @@ class PyAVBackend(ContainerBackend):
             if packets:
                 return packets
         
-        # Fallback to legacy behavior if codec encoding fails
-        logger.warning(f"Codec encoding failed for stream {stream_index}, using fallback")
-        return self._legacy_encode_fallback(data, stream_index, timestamp, stream)
+        return [] 
     
     def _get_feature_type_from_stream(self, stream: Any) -> Any:
         """Extract feature type information from stream metadata"""

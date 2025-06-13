@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pytest
 
-from robodm import FeatureType, Trajectory, TrajectoryFactory
+from robodm import FeatureType, Trajectory
 from robodm.trajectory import CodecConfig
 from robodm.trajectory_base import FileSystemInterface, TimeProvider
 
@@ -182,15 +182,14 @@ class TestFeatureType:
 
 
 class TestTrajectoryFactory:
-    """Test the TrajectoryFactory class."""
+    """Test the TrajectoryFactory class - now testing direct Trajectory usage with dependency injection."""
 
     def test_factory_with_default_dependencies(self, temp_dir):
-        """Test factory with default dependencies."""
-        factory = TrajectoryFactory()
+        """Test trajectory with default dependencies."""
         path = os.path.join(temp_dir, "test.vla")
 
         # This should work with actual filesystem since we're using defaults
-        traj = factory.create_trajectory(path, mode="w")
+        traj = Trajectory(path, mode="w")
         assert traj is not None
         assert hasattr(traj, "_filesystem")
         assert hasattr(traj, "_time_provider")
@@ -198,10 +197,7 @@ class TestTrajectoryFactory:
 
     def test_factory_with_mock_dependencies(self, mock_filesystem,
                                             mock_time_provider, temp_dir):
-        """Test factory with mock dependencies."""
-        factory = TrajectoryFactory(filesystem=mock_filesystem,
-                                    time_provider=mock_time_provider)
-
+        """Test trajectory with mock dependencies."""
         # Setup mock filesystem
         mock_filesystem.add_file("/test/test.vla")
         mock_filesystem.directories.add(temp_dir)
@@ -212,7 +208,7 @@ class TestTrajectoryFactory:
             mock_container = Mock()
             mock_av.return_value = mock_container
 
-            traj = factory.create_trajectory(path, mode="w")
+            traj = Trajectory(path, mode="w", filesystem=mock_filesystem, time_provider=mock_time_provider)
             assert traj._filesystem == mock_filesystem
             assert traj._time_provider == mock_time_provider
 
@@ -429,9 +425,6 @@ class TestTrajectory:
     def test_dependency_injection(self, mock_filesystem, mock_time_provider,
                                   temp_dir):
         """Test that dependency injection works correctly."""
-        factory = TrajectoryFactory(filesystem=mock_filesystem,
-                                    time_provider=mock_time_provider)
-
         # Setup mock filesystem
         mock_filesystem.directories.add(temp_dir)
         mock_filesystem.add_file("/test/test.vla")
@@ -440,7 +433,7 @@ class TestTrajectory:
             mock_container = Mock()
             mock_av.return_value = mock_container
 
-            traj = factory.create_trajectory("/test/test.vla", mode="w")
+            traj = Trajectory(path="/test/test.vla", mode="w", filesystem=mock_filesystem, time_provider=mock_time_provider)
 
             # Test that filesystem methods are called on mock
             assert traj._exists("/test/test.vla")

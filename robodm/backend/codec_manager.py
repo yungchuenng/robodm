@@ -34,36 +34,33 @@ class CodecManager:
         stream: Any = None
     ) -> Optional[DataCodec]:
         """Create and configure a codec for a stream"""
-        try:
-            # Determine the actual codec to use
-            raw_codec_name = self._determine_codec_name(encoding, codec_config)
-            
-            # Get codec configuration
-            config = self._build_codec_config(raw_codec_name, codec_config, feature_type)
-            
-            # Create codec instance
-            if is_video_codec(raw_codec_name):
-                # For video codecs, pass codec_name in config if not already present
-                if 'codec_name' not in config:
-                    config['codec_name'] = raw_codec_name
-                codec = get_codec(raw_codec_name, **config)
-            else:
-                codec = get_codec(raw_codec_name, **config)
-            
-            # Configure the codec if needed
-            if isinstance(codec, VideoCodec) and stream is not None:
-                codec.configure_stream(stream, feature_type)
-            
-            # Cache the codec and its config
-            self._stream_codecs[stream_index] = codec
-            self._stream_configs[stream_index] = config
-            
-            logger.debug(f"Created codec {raw_codec_name} for stream {stream_index}")
-            return codec
-            
-        except Exception as e:
-            logger.error(f"Failed to create codec for stream {stream_index}: {e}")
-            return None
+        # Determine the actual codec to use
+        raw_codec_name = self._determine_codec_name(encoding, codec_config)
+        
+        # Get codec configuration
+        config = self._build_codec_config(raw_codec_name, codec_config, feature_type)
+        
+        # Create codec instance
+        if is_video_codec(raw_codec_name):
+            # For video codecs, pass codec_name in config if not already present
+            if 'codec_name' not in config:
+                config['codec_name'] = raw_codec_name
+            codec = get_codec(raw_codec_name, **config)
+        else:
+            codec = get_codec(raw_codec_name, **config)
+        
+        # Configure the codec if needed
+        if isinstance(codec, VideoCodec) and stream is not None:
+            codec.configure_stream(stream, feature_type)
+        
+        # Cache the codec and its config
+        self._stream_codecs[stream_index] = codec
+        self._stream_configs[stream_index] = config
+        
+        logger.debug(f"Created codec {raw_codec_name} for stream {stream_index}")
+        return codec
+        
+
     
     def get_codec_for_stream(self, stream_index: int) -> Optional[DataCodec]:
         """Get the codec instance for a stream"""
@@ -167,15 +164,14 @@ class CodecManager:
         """Determine the actual codec name to use"""
         if encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}:
             return encoding
-        elif encoding == "rawvideo":
+        elif encoding.startswith("rawvideo"):
             # For rawvideo, check the codec config for the specific implementation
             if hasattr(codec_config, 'get_raw_codec_name'):
-                return codec_config.get_raw_codec_name("rawvideo")
+                return codec_config.get_raw_codec_name(encoding)
             else:
-                return "pickle_raw"  # Default fallback
+               raise ValueError(f"Unknown encoding {encoding}")
         else:
-            logger.warning(f"Unknown encoding {encoding}, falling back to pickle_raw")
-            return "pickle_raw"
+            raise ValueError(f"Unknown encoding {encoding}")
     
     def _build_codec_config(self, codec_name: str, codec_config: Any, feature_type: Any) -> Dict[str, Any]:
         """Build configuration dictionary for codec creation"""
@@ -198,7 +194,7 @@ class CodecManager:
         elif is_raw_codec(codec_name):
             # Add raw codec specific config
             if hasattr(codec_config, 'get_codec_options'):
-                codec_opts = codec_config.get_codec_options("rawvideo")
+                codec_opts = codec_config.get_codec_options(codec_name)
                 config.update(codec_opts)
         
         return config

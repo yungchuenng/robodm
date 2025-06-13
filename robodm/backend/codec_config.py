@@ -227,7 +227,7 @@ class CodecConfig:
     def get_raw_codec_name(self, codec: str) -> str:
         """Get the raw codec implementation name for a given codec."""
         if codec not in self.CODEC_CONFIGS:
-            return "pickle_raw"  # Default fallback
+            raise ValueError(f"Unknown codec {codec}")
         
         codec_config = cast(Dict[str, Any], self.CODEC_CONFIGS[codec])
         return codec_config.get("raw_codec", "pickle_raw")
