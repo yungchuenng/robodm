@@ -24,6 +24,7 @@ import numpy as np
 from .base import ContainerBackend, StreamMetadata, PacketInfo, StreamConfig
 from robodm.feature import FeatureType
 from robodm.backend.codec_config import CodecConfig
+from .codec_manager import CodecManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,8 @@ class PyAVBackend(ContainerBackend):
         self.container: av.container.Container | None = None
         # Map index -> av.Stream for quick lookup
         self._idx_to_stream: Dict[int, av.stream.Stream] = {}
+        # Codec manager for handling encoding/decoding
+        self.codec_manager = CodecManager()
 
     # ------------------------------------------------------------------
     # API implementation
@@ -69,6 +72,7 @@ class PyAVBackend(ContainerBackend):
             self.container.close()
             self.container = None
             self._idx_to_stream.clear()
+            self.codec_manager.clear_stream_codecs()
 
     def get_streams(self) -> List[StreamMetadata]:
         out: List[StreamMetadata] = []
@@ -105,19 +109,43 @@ class PyAVBackend(ContainerBackend):
         stream = self._idx_to_stream[stream_index]
         encoding = stream.codec_context.codec.name
         
-        packets: List[PacketInfo] = []
+        # Create codec if it doesn't exist
+        codec = self.codec_manager.get_codec_for_stream(stream_index)
+        if codec is None:
+            feature_type = self._get_feature_type_from_stream(stream)
+            codec = self.codec_manager.create_codec_for_stream(
+                stream_index, encoding, codec_config, feature_type, stream
+            )
         
-        # Determine if this should be encoded as video or raw
+        # Use codec manager to encode data
+        if codec is not None:
+            packets = self.codec_manager.encode_data(stream_index, data, timestamp, stream)
+            if packets:
+                return packets
+        
+        # Fallback to legacy behavior if codec encoding fails
+        logger.warning(f"Codec encoding failed for stream {stream_index}, using fallback")
+        return self._legacy_encode_fallback(data, stream_index, timestamp, stream)
+    
+    def _get_feature_type_from_stream(self, stream: Any) -> Any:
+        """Extract feature type information from stream metadata"""
+        # This is a placeholder - in practice you might parse the FEATURE_TYPE metadata
+        # or use other mechanisms to get the actual FeatureType object
+        return None
+    
+    def _legacy_encode_fallback(self, data: Any, stream_index: int, timestamp: int, stream: Any) -> List[PacketInfo]:
+        """Legacy encoding fallback"""
+        encoding = stream.codec_context.codec.name
+        
         if (encoding in {"ffv1", "libaom-av1", "libx264", "libx265"} and 
             isinstance(data, np.ndarray) and len(data.shape) >= 2):
-            
-            # Create video frame
+            # Legacy video encoding
             frame = self._create_frame(data, stream)
             frame.time_base = stream.time_base
             frame.pts = timestamp
             frame.dts = timestamp
             
-            # Encode to packets
+            packets = []
             for pkt in stream.encode(frame):  # type: ignore[attr-defined]
                 packets.append(PacketInfo(
                     data=bytes(pkt),
@@ -127,23 +155,22 @@ class PyAVBackend(ContainerBackend):
                     time_base=(stream.time_base.numerator, stream.time_base.denominator),
                     is_keyframe=bool(pkt.is_keyframe) if hasattr(pkt, 'is_keyframe') else False
                 ))
+            return packets
         else:
-            # Raw/pickled data path
+            # Legacy pickle encoding
             if isinstance(data, np.ndarray):
                 payload = pickle.dumps(data)
             else:
                 payload = pickle.dumps(data)
 
-            packets.append(PacketInfo(
+            return [PacketInfo(
                 data=payload,
                 pts=timestamp,
                 dts=timestamp,
                 stream_index=stream_index,
                 time_base=(stream.time_base.numerator, stream.time_base.denominator),
                 is_keyframe=True
-            ))
-        
-        return packets
+            )]
 
     def flush_all_streams(self) -> List[PacketInfo]:
         """Flush all streams and return all buffered packets"""
@@ -158,8 +185,14 @@ class PyAVBackend(ContainerBackend):
             raise ValueError(f"No stream with index {stream_index}")
         
         stream = self._idx_to_stream[stream_index]
-        packets: List[PacketInfo] = []
         
+        # Try codec manager first
+        packets = self.codec_manager.flush_stream(stream_index, stream)
+        if packets:
+            return packets
+        
+        # Fallback to legacy PyAV stream flushing for video codecs
+        packets = []
         try:
             # Flush the encoder
             for pkt in stream.encode(None):  # type: ignore[attr-defined]
@@ -401,7 +434,14 @@ class PyAVBackend(ContainerBackend):
         """Convert a backend-specific frame to numpy array"""
         import pickle
         
-        # Handle pickled data (rawvideo packets)
+        # Try to use codec manager for decoding if frame is a PacketInfo
+        if hasattr(frame, 'stream_index') and hasattr(frame, 'data'):
+            try:
+                return self.codec_manager.decode_packet(frame)
+            except Exception as e:
+                logger.warning(f"Codec manager decode failed: {e}")
+        
+        # Handle pickled data (rawvideo packets) - legacy support
         if isinstance(frame, bytes):
             return pickle.loads(frame)
         
@@ -454,26 +494,32 @@ class PyAVBackend(ContainerBackend):
         # Determine encoding if not explicitly provided.
         enc = encoding or codec_config.get_codec_for_feature(feature_type)
 
-        stream = self.container.add_stream(enc)
+        # For rawvideo variants, always use "rawvideo" as container encoding
+        container_enc = enc
+        if enc.startswith("rawvideo"):
+            container_enc = "rawvideo"
+
+        stream = self.container.add_stream(container_enc)
 
         # Configure stream for video codecs
-        if enc in {"ffv1", "libaom-av1", "libx264", "libx265"}:
+        if container_enc in {"ffv1", "libaom-av1", "libx264", "libx265"}:
             shape = feature_type.shape
             if shape is not None and len(shape) >= 2:
                 stream.width = shape[1]
                 stream.height = shape[0]
 
-            pixel_fmt = codec_config.get_pixel_format(enc, feature_type)
+            pixel_fmt = codec_config.get_pixel_format(container_enc, feature_type)
             if pixel_fmt:
                 stream.pix_fmt = pixel_fmt
 
-            codec_opts = codec_config.get_codec_options(enc)
+            codec_opts = codec_config.get_codec_options(container_enc)
             if codec_opts:
                 stream.codec_context.options = codec_opts
 
         # Metadata and time-base
         stream.metadata["FEATURE_NAME"] = feature_name
         stream.metadata["FEATURE_TYPE"] = str(feature_type)
+        stream.metadata["ORIGINAL_CODEC"] = enc  # Store original codec choice
         stream.time_base = Fraction(1, 1000)
 
         self._idx_to_stream[stream.index] = stream

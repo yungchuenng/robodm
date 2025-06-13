@@ -71,7 +71,7 @@ class Trajectory(TrajectoryInterface):
 
 
         # Initialize codec configuration
-        self.codec_config = CodecConfig(video_codec, codec_options)
+        self.codec_config = CodecConfig.from_video_codec(video_codec, codec_options)
 
         # Dependency injection - set early so they're available during init
         self._filesystem = filesystem
@@ -635,7 +635,7 @@ class Trajectory(TrajectoryInterface):
             feature_dict: dictionary of feature name and its type
         """
         for feature, feature_type in feature_spec.items():
-            encoding = self._get_encoding_of_feature(None, feature_type)
+            encoding = self._get_encoding_of_feature(None, feature_type, feature)
             self.feature_name_to_stream[
                 feature] = self._add_stream_to_container(
                     self.container_file, feature, encoding, feature_type)
@@ -899,7 +899,7 @@ class Trajectory(TrajectoryInterface):
                     continue
                 
                 # Determine target encoding
-                target_encoding = self._get_encoding_of_feature(None, feature_type)
+                target_encoding = self._get_encoding_of_feature(None, feature_type, feature_name)
                 
                 # Create stream config
                 config = StreamConfig(
@@ -1056,16 +1056,18 @@ class Trajectory(TrajectoryInterface):
         return stream
 
     def _get_encoding_of_feature(self, feature_value: Any,
-                                 feature_type: Optional[FeatureType]) -> Text:
+                                 feature_type: Optional[FeatureType],
+                                 feature_name: Optional[str] = None) -> Text:
         """
         get the encoding of the feature value
         args:
             feature_value: value of the feature
             feature_type: type of the feature
+            feature_name: name of the feature (for feature-specific codec selection)
         return:
             encoding of the feature in string
         """
         if feature_type is None:
             feature_type = FeatureType.from_data(feature_value)
 
-        return self.codec_config.get_codec_for_feature(feature_type)
+        return self.codec_config.get_codec_for_feature(feature_type, feature_name)
