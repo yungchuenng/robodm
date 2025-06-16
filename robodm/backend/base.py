@@ -37,11 +37,12 @@ class StreamConfig:
     """Configuration for stream creation"""
     feature_name: str
     feature_type: Any  # FeatureType object
-    encoding: str
+    encoding: str # container encoding. rawvideo | libaom-av1 | ffv1 | libx264 | libx265
     codec_options: Optional[Dict[str, Any]] = None
     pixel_format: Optional[str] = None
     width: Optional[int] = None
     height: Optional[int] = None
+    internal_codec: Optional[str] = None  # Internal codec implementation. pickle_raw | pyarrow_batch
 
 class ContainerBackend(ABC):
     """Abstract base class for container backends"""

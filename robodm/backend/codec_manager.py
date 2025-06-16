@@ -28,26 +28,28 @@ class CodecManager:
     def create_codec_for_stream(
         self, 
         stream_index: int, 
-        encoding: str, 
+        container_encoding: str, 
         codec_config: Any,
         feature_type: Any = None,
         stream: Any = None
     ) -> Optional[DataCodec]:
-        """Create and configure a codec for a stream"""
-        # Determine the actual codec to use
-        raw_codec_name = self._determine_codec_name(encoding, codec_config)
+        """Create and configure a codec for a stream.
+        
+        Args:
+            stream_index: Index of the stream
+            container_encoding: The container codec (e.g., "libx264", "rawvideo")
+            codec_config: Codec configuration object
+            feature_type: Feature type information
+            stream: Stream object (for video codecs)
+        """
+        # Determine the actual codec implementation to use
+        codec_impl_name = self._determine_codec_implementation(container_encoding, codec_config)
         
         # Get codec configuration
-        config = self._build_codec_config(raw_codec_name, codec_config, feature_type)
+        config = self._build_codec_config(codec_impl_name, codec_config, feature_type, container_encoding)
         
         # Create codec instance
-        if is_video_codec(raw_codec_name):
-            # For video codecs, pass codec_name in config if not already present
-            if 'codec_name' not in config:
-                config['codec_name'] = raw_codec_name
-            codec = get_codec(raw_codec_name, **config)
-        else:
-            codec = get_codec(raw_codec_name, **config)
+        codec = self._create_codec_instance(codec_impl_name, config)
         
         # Configure the codec if needed
         if isinstance(codec, VideoCodec) and stream is not None:
@@ -57,11 +59,56 @@ class CodecManager:
         self._stream_codecs[stream_index] = codec
         self._stream_configs[stream_index] = config
         
-        logger.debug(f"Created codec {raw_codec_name} for stream {stream_index}")
+        logger.debug(f"Created codec {codec_impl_name} for stream {stream_index} (container: {container_encoding})")
         return codec
-        
 
-    
+    def _determine_codec_implementation(self, container_encoding: str, codec_config: Any) -> str:
+        """Determine the actual codec implementation to use.
+        
+        Args:
+            container_encoding: The container codec (e.g., "libx264", "rawvideo")
+            codec_config: Codec configuration object
+            
+        Returns:
+            The codec implementation name to use
+        """
+        # For image/video codecs, use the container encoding directly
+        if codec_config.is_image_codec(container_encoding):
+            return container_encoding
+        
+        # For raw data, determine the internal codec implementation
+        elif container_encoding == "rawvideo":
+            # Use codec config to determine the internal implementation
+            if hasattr(codec_config, 'get_internal_codec'):
+                # For transcoding cases, we might have a specialized config that knows
+                # exactly which internal codec to use
+                internal_codec = codec_config.get_internal_codec("rawvideo")
+                if internal_codec:
+                    return internal_codec
+                else:
+                    return "pickle_raw"
+            else:
+                return "pickle_raw"
+        
+        else:
+            raise ValueError(f"Unknown container encoding: {container_encoding}")
+
+    def _create_codec_instance(self, codec_impl_name: str, config: Dict[str, Any]) -> DataCodec:
+        """Create a codec instance with the given configuration."""
+        try:
+            if is_video_codec(codec_impl_name):
+                # For video codecs, pass codec_name in config if not already present
+                if 'codec_name' not in config:
+                    config['codec_name'] = codec_impl_name
+                codec = get_codec(codec_impl_name, **config)
+            else:
+                codec = get_codec(codec_impl_name, **config)
+            
+            return codec
+        except Exception as e:
+            logger.error(f"Failed to create codec {codec_impl_name}: {e}")
+            raise
+
     def get_codec_for_stream(self, stream_index: int) -> Optional[DataCodec]:
         """Get the codec instance for a stream"""
         return self._stream_codecs.get(stream_index)
@@ -160,44 +207,64 @@ class CodecManager:
     
     # Private helper methods
     
-    def _determine_codec_name(self, encoding: str, codec_config: Any) -> str:
-        """Determine the actual codec name to use"""
-        if encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}:
-            return encoding
-        elif encoding.startswith("rawvideo"):
-            # For rawvideo, check the codec config for the specific implementation
-            if hasattr(codec_config, 'get_raw_codec_name'):
-                return codec_config.get_raw_codec_name(encoding)
-            else:
-               raise ValueError(f"Unknown encoding {encoding}")
-        else:
-            raise ValueError(f"Unknown encoding {encoding}")
-    
-    def _build_codec_config(self, codec_name: str, codec_config: Any, feature_type: Any) -> Dict[str, Any]:
+    def _build_codec_config(
+        self, 
+        codec_impl_name: str, 
+        codec_config: Any, 
+        feature_type: Any,
+        container_encoding: str
+    ) -> Dict[str, Any]:
         """Build configuration dictionary for codec creation"""
         config = {}
         
         # Add codec name for video codecs that need it
-        if is_video_codec(codec_name):
+        if is_video_codec(codec_impl_name):
             # For video codecs, pass codec_name as first positional argument
             # and other config as keyword arguments
             if hasattr(codec_config, 'get_pixel_format'):
-                pixel_fmt = codec_config.get_pixel_format(codec_name, feature_type)
+                pixel_fmt = codec_config.get_pixel_format(container_encoding, feature_type)
                 if pixel_fmt:
                     config["pixel_format"] = pixel_fmt
             
             if hasattr(codec_config, 'get_codec_options'):
-                codec_opts = codec_config.get_codec_options(codec_name)
+                codec_opts = codec_config.get_codec_options(container_encoding)
                 if codec_opts:
                     config["options"] = codec_opts
         
-        elif is_raw_codec(codec_name):
-            # Add raw codec specific config
+        elif is_raw_codec(codec_impl_name):
+            # Add raw codec specific config, but filter based on actual codec implementation
             if hasattr(codec_config, 'get_codec_options'):
-                codec_opts = codec_config.get_codec_options(codec_name)
-                config.update(codec_opts)
+                # For raw codecs, we need to determine which rawvideo variant was requested
+                # Since we might not have that info directly, we'll try to get options from
+                # the internal codec configuration
+                raw_codec_options = {}
+                
+                # Try to get options from the raw data codec configs
+                if hasattr(codec_config, 'RAW_DATA_CODEC_CONFIGS'):
+                    for raw_codec_name, raw_config in codec_config.RAW_DATA_CODEC_CONFIGS.items():
+                        if raw_config.get("internal_codec") == codec_impl_name:
+                            raw_codec_options = raw_config.get("options", {})
+                            break
+                
+                # Merge with any custom options
+                if raw_codec_options:
+                    filtered_opts = self._filter_codec_options(codec_impl_name, raw_codec_options)
+                    config.update(filtered_opts)
         
         return config
+    
+    def _filter_codec_options(self, codec_name: str, codec_options: Dict[str, Any]) -> Dict[str, Any]:
+        """Filter codec options based on what the specific codec implementation can handle"""
+        if codec_name == "pickle_raw":
+            # PickleRawCodec doesn't accept any constructor parameters
+            return {}
+        elif codec_name == "pyarrow_batch":
+            # PyArrowBatchCodec accepts batch_size and compression
+            allowed_options = {"batch_size", "compression"}
+            return {k: v for k, v in codec_options.items() if k in allowed_options}
+        else:
+            # For unknown raw codecs, pass all options (backward compatibility)
+            return codec_options
     
     def _codec_packet_to_packet_info(
         self, 

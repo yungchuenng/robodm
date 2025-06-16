@@ -107,14 +107,14 @@ class PyAVBackend(ContainerBackend):
             raise ValueError(f"No stream with index {stream_index}")
         
         stream = self._idx_to_stream[stream_index]
-        encoding = stream.codec_context.codec.name
+        container_encoding = stream.codec_context.codec.name
         
         # Create codec if it doesn't exist
         codec = self.codec_manager.get_codec_for_stream(stream_index)
         if codec is None:
             feature_type = self._get_feature_type_from_stream(stream)
             codec = self.codec_manager.create_codec_for_stream(
-                stream_index, encoding, codec_config, feature_type, stream
+                stream_index, container_encoding, codec_config, feature_type, stream
             )
         
         # Use codec manager to encode data
@@ -123,7 +123,7 @@ class PyAVBackend(ContainerBackend):
             if packets:
                 return packets
         
-        return [] 
+        return []
     
     def _get_feature_type_from_stream(self, stream: Any) -> Any:
         """Extract feature type information from stream metadata"""
@@ -296,24 +296,39 @@ class PyAVBackend(ContainerBackend):
             output_stream_idx = stream_mapping[packet.stream.index]
             output_stream = output_container.streams[output_stream_idx]
             
-            # Check if we need to transcode
-            original_encoding = packet.stream.codec_context.codec.name
+            # Get transcoding configuration
+            original_container_codec = packet.stream.codec_context.codec.name
+            original_selected_codec = packet.stream.metadata.get("SELECTED_CODEC", original_container_codec)
+            
             target_config = stream_configs.get(packet.stream.index)
             
-            if (original_encoding == "rawvideo" and target_config and 
-                target_config.encoding != "rawvideo"):
-                # Transcode from pickled to video
-                data = pickle.loads(bytes(packet))
-                frame = self._create_frame(data, output_stream)
-                frame.time_base = output_stream.time_base  
-                frame.pts = packet.pts
-                frame.dts = packet.dts
+            if target_config:
+                target_container_codec = target_config.encoding
+                target_selected_codec = getattr(target_config, 'selected_codec', target_config.encoding)
                 
-                for new_packet in output_stream.encode(frame):  # type: ignore[attr-defined]
-                    output_container.mux(new_packet)
+                # Determine transcoding strategy
+                needs_transcoding = self._needs_transcoding(
+                    original_container_codec, original_selected_codec,
+                    target_container_codec, target_selected_codec,
+                    packet.stream.metadata, target_config
+                )
+                
+                if needs_transcoding:
+                     success = self._transcode_packet(
+                         packet, output_stream, output_container,
+                         original_container_codec, target_container_codec,
+                         original_selected_codec, target_selected_codec,
+                         target_config
+                     )
+                     if success:
+                         packets_muxed += 1
+                else:
+                    # Direct remux
+                    packet.stream = output_stream
+                    output_container.mux(packet)
                     packets_muxed += 1
             else:
-                # Direct remux
+                # No target config, direct remux
                 packet.stream = output_stream
                 output_container.mux(packet)
                 packets_muxed += 1
@@ -490,34 +505,42 @@ class PyAVBackend(ContainerBackend):
             raise RuntimeError("Container not opened")
 
         # Determine encoding if not explicitly provided.
-        enc = encoding or codec_config.get_codec_for_feature(feature_type)
+        selected_codec = encoding or codec_config.get_codec_for_feature(feature_type, feature_name)
 
-        # For rawvideo variants, always use "rawvideo" as container encoding
-        container_enc = enc
-        if enc.startswith("rawvideo"):
-            container_enc = "rawvideo"
+        # Get the appropriate container codec
+        container_codec = codec_config.get_container_codec(selected_codec)
 
-        stream = self.container.add_stream(container_enc)
+        # Create stream with container codec
+        stream = self.container.add_stream(container_codec)
 
-        # Configure stream for video codecs
-        if container_enc in {"ffv1", "libaom-av1", "libx264", "libx265"}:
+        # Configure stream for image codecs
+        if codec_config.is_image_codec(container_codec):
             shape = feature_type.shape
             if shape is not None and len(shape) >= 2:
                 stream.width = shape[1]
                 stream.height = shape[0]
 
-            pixel_fmt = codec_config.get_pixel_format(container_enc, feature_type)
+            pixel_fmt = codec_config.get_pixel_format(selected_codec, feature_type)
             if pixel_fmt:
                 stream.pix_fmt = pixel_fmt
 
-            codec_opts = codec_config.get_codec_options(container_enc)
+            codec_opts = codec_config.get_codec_options(selected_codec)
             if codec_opts:
-                stream.codec_context.options = codec_opts
+                # Convert all option values to strings since PyAV expects string values
+                string_options = {k: str(v) for k, v in codec_opts.items()}
+                stream.codec_context.options = string_options
 
         # Metadata and time-base
         stream.metadata["FEATURE_NAME"] = feature_name
         stream.metadata["FEATURE_TYPE"] = str(feature_type)
-        stream.metadata["ORIGINAL_CODEC"] = enc  # Store original codec choice
+        stream.metadata["SELECTED_CODEC"] = selected_codec  # Store the selected codec
+        
+        # For raw data codecs, store the internal codec implementation
+        if codec_config.is_raw_data_codec(selected_codec):
+            internal_codec = codec_config.get_internal_codec(selected_codec)
+            if internal_codec:
+                stream.metadata["INTERNAL_CODEC"] = internal_codec
+        
         stream.time_base = Fraction(1, 1000)
 
         self._idx_to_stream[stream.index] = stream
@@ -529,9 +552,10 @@ class PyAVBackend(ContainerBackend):
     
     def _create_output_stream(self, container: av.container.OutputContainer, config: StreamConfig) -> int:
         """Helper to create a stream in an output container"""
+        # Use the encoding directly as the container codec (it should already be the container codec)
         stream = container.add_stream(config.encoding)
         
-        # Configure video codec settings
+        # Configure image codec settings
         if config.encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}:
             if config.width and config.height:
                 stream.width = config.width
@@ -546,11 +570,19 @@ class PyAVBackend(ContainerBackend):
                 stream.pix_fmt = config.pixel_format
 
             if config.codec_options:
-                stream.codec_context.options = config.codec_options
+                # Convert all option values to strings since PyAV expects string values
+                string_options = {k: str(v) for k, v in config.codec_options.items()}
+                stream.codec_context.options = string_options
 
         # Set metadata
         stream.metadata["FEATURE_NAME"] = config.feature_name
         stream.metadata["FEATURE_TYPE"] = str(config.feature_type)
+        stream.metadata["SELECTED_CODEC"] = config.encoding  # Use consistent naming
+        
+        # Store internal codec information for rawvideo streams
+        if config.encoding == "rawvideo" and config.internal_codec:
+            stream.metadata["INTERNAL_CODEC"] = config.internal_codec
+            
         stream.time_base = Fraction(1, 1000)
         
         return stream.index
@@ -588,3 +620,153 @@ class PyAVBackend(ContainerBackend):
             frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
 
         return frame 
+
+    def _needs_transcoding(
+        self,
+        original_container_codec: str,
+        original_selected_codec: str, 
+        target_container_codec: str,
+        target_selected_codec: str,
+        original_metadata: Dict[str, Any],
+        target_config: Any
+    ) -> bool:
+        """Determine if transcoding is needed between codecs."""
+        
+        # If container codecs are different, we need transcoding
+        if original_container_codec != target_container_codec:
+            return True
+        
+        # If both use rawvideo container, check internal codec differences
+        if original_container_codec == "rawvideo" and target_container_codec == "rawvideo":
+            original_internal = original_metadata.get("INTERNAL_CODEC", "pickle_raw")
+            target_internal = getattr(target_config, 'internal_codec', None)
+            
+            # Need transcoding if internal codecs differ
+            if target_internal and original_internal != target_internal:
+                return True
+        
+        return False
+
+    def _transcode_packet(
+        self,
+        packet: Any,
+        output_stream: Any,
+        output_container: Any,
+        original_container_codec: str,
+        target_container_codec: str,
+        original_selected_codec: str,
+        target_selected_codec: str,
+        target_config: Any
+    ) -> bool:
+        """Transcode a packet between different codecs."""
+        
+        try:
+            # Handle rawvideo -> image codec transcoding
+            if (original_container_codec == "rawvideo" and 
+                target_container_codec in {"libx264", "libx265", "libaom-av1", "ffv1"}):
+                return self._transcode_raw_to_image(packet, output_stream, output_container, target_config)
+            
+            # Handle image codec -> rawvideo transcoding
+            elif (original_container_codec in {"libx264", "libx265", "libaom-av1", "ffv1"} and
+                  target_container_codec == "rawvideo"):
+                return self._transcode_image_to_raw(packet, output_stream, output_container, target_config)
+            
+            # Handle image codec -> image codec transcoding  
+            elif (original_container_codec in {"libx264", "libx265", "libaom-av1", "ffv1"} and
+                  target_container_codec in {"libx264", "libx265", "libaom-av1", "ffv1"}):
+                return self._transcode_image_to_image(packet, output_stream, output_container, target_config)
+            
+            # Handle rawvideo internal codec transcoding
+            elif (original_container_codec == "rawvideo" and target_container_codec == "rawvideo"):
+                return self._transcode_raw_internal(packet, output_stream, output_container, target_config)
+            
+            else:
+                logger.warning(f"Unsupported transcoding: {original_container_codec} -> {target_container_codec}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Transcoding failed: {e}")
+            return False
+
+    def _transcode_raw_to_image(self, packet: Any, output_stream: Any, output_container: Any, target_config: Any) -> bool:
+        """Transcode from rawvideo to image codec."""
+        # Decode rawvideo packet (usually pickled data)
+        data = pickle.loads(bytes(packet))
+        
+        # Create image frame
+        frame = self._create_frame(data, output_stream)
+        frame.time_base = output_stream.time_base  
+        frame.pts = packet.pts
+        frame.dts = packet.dts
+        
+        # Encode and mux
+        for new_packet in output_stream.encode(frame):  # type: ignore[attr-defined]
+            new_packet.stream = output_stream
+            output_container.mux(new_packet)
+        
+        return True
+
+    def _transcode_image_to_raw(self, packet: Any, output_stream: Any, output_container: Any, target_config: Any) -> bool:
+        """Transcode from image codec to rawvideo."""
+        # This would require decoding the image packet first
+        # For now, we'll log this as unsupported
+        logger.warning("Image to raw transcoding not yet implemented")
+        return False
+
+    def _transcode_image_to_image(self, packet: Any, output_stream: Any, output_container: Any, target_config: Any) -> bool:
+        """Transcode between different image codecs."""
+        # This would require decoding and re-encoding
+        # For now, we'll log this as unsupported
+        logger.warning("Image to image transcoding not yet implemented")
+        return False
+
+    def _transcode_raw_internal(self, packet: Any, output_stream: Any, output_container: Any, target_config: Any) -> bool:
+        """Transcode between different rawvideo internal codecs."""
+        try:
+            # Create a temporary codec manager for transcoding
+            transcode_codec_manager = CodecManager()
+            
+            target_internal_codec = getattr(target_config, 'internal_codec', None)
+            if not target_internal_codec:
+                return False
+            
+            # Create transcoding-specific codec config
+            from robodm.backend.codec_config import CodecConfig
+            transcoding_codec_config = CodecConfig.for_transcoding_to_internal_codec(
+                target_internal_codec, 
+                target_config.codec_options or {}
+            )
+            
+            # Create codec for the target internal encoding
+            codec = transcode_codec_manager.create_codec_for_stream(
+                output_stream.index, 
+                "rawvideo",  # Container codec is always rawvideo
+                transcoding_codec_config,
+                target_config.feature_type,
+                output_stream
+            )
+            
+            if codec:
+                # Decode original data using pickle (legacy format)
+                original_data = pickle.loads(bytes(packet))
+                
+                # Encode using the new codec
+                codec_packets = codec.encode(original_data, packet.pts)
+                
+                # Convert codec packets to PyAV packets and mux
+                for codec_packet in codec_packets:
+                    new_packet = av.Packet(codec_packet.data)
+                    new_packet.pts = codec_packet.metadata.get("pts", packet.pts)
+                    new_packet.dts = codec_packet.metadata.get("dts", packet.pts)
+                    new_packet.time_base = output_stream.time_base
+                    new_packet.stream = output_stream
+                     
+                    output_container.mux(new_packet)
+                
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to transcode internal codec: {e}")
+            return False 

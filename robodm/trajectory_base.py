@@ -98,6 +98,7 @@ class TrajectoryInterface(ABC):
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
         fps: Optional[int] = 10,
+        raw_codec: Optional[str] = None,
     ) -> "TrajectoryInterface":
         """
         Create a Trajectory object from a list of dictionaries.
@@ -105,10 +106,11 @@ class TrajectoryInterface(ABC):
         Args:
             data (List[Dict[str, Any]]): list of dictionaries
             path (Text): path to the trajectory file
-            video_codec (str, optional): Video codec to use. Defaults to "auto".
+            video_codec (str, optional): Video codec to use for video/image features. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
             visualization_feature: Optional feature name to prioritize as first stream for visualization.
             fps: Optional frames per second for timestamp calculation.
+            raw_codec (str, optional): Raw codec to use for non-image features. Defaults to None.
         """
         pass
 
@@ -123,6 +125,7 @@ class TrajectoryInterface(ABC):
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
         fps: Optional[int] = 10,
+        raw_codec: Optional[str] = None,
     ) -> "TrajectoryInterface":
         """
         Create a Trajectory object from a dictionary of lists.
@@ -131,10 +134,11 @@ class TrajectoryInterface(ABC):
             data (Dict[str, List[Any]]): dictionary of lists. Assume list length is the same for all features.
             path (Text): path to the trajectory file
             feature_name_separator (Text, optional): Delimiter to separate feature names. Defaults to "/".
-            video_codec (str, optional): Video codec to use. Defaults to "auto".
+            video_codec (str, optional): Video codec to use for video/image features. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
             visualization_feature: Optional feature name to prioritize as first stream for visualization.
             fps: Optional frames per second for timestamp calculation.
+            raw_codec (str, optional): Raw codec to use for non-image features. Defaults to None.
         """
         pass
 
