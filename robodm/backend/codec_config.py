@@ -283,7 +283,7 @@ class CodecConfig:
                     )
 
             # Auto-selection for RGB images only
-            codec_preferences = ["libaom-av1", "libx265", "libx264", "ffv1"]
+            codec_preferences = [ "libx265", "libx264", "ffv1", "libaom-av1",]
 
             for codec in codec_preferences:
                 if self.is_valid_image_shape(data_shape, codec):
