@@ -22,7 +22,7 @@ import av
 import numpy as np
 
 from .base import ContainerBackend, StreamMetadata, PacketInfo, StreamConfig
-from robodm.feature import FeatureType
+from robodm import FeatureType
 from robodm.backend.codec_config import CodecConfig
 from .codec_manager import CodecManager
 
@@ -100,14 +100,27 @@ class PyAVBackend(ContainerBackend):
         data: Any, 
         stream_index: int, 
         timestamp: int,
-        codec_config: Any
+        codec_config: Any,
+        force_direct_encoding: bool = False
     ) -> List[PacketInfo]:
-        """Encode arbitrary data into packets with timestamp handling"""
+        """Encode arbitrary data into packets with timestamp handling
+        
+        Args:
+            data: Data to encode
+            stream_index: Target stream index
+            timestamp: Timestamp in milliseconds
+            codec_config: Codec configuration
+            force_direct_encoding: If True, encode directly to target format instead of rawvideo
+        """
         if stream_index not in self._idx_to_stream:
             raise ValueError(f"No stream with index {stream_index}")
         
         stream = self._idx_to_stream[stream_index]
         container_encoding = stream.codec_context.codec.name
+        
+        # If force_direct_encoding is True, bypass rawvideo intermediate step
+        if force_direct_encoding and container_encoding != "rawvideo":
+            return self._encode_directly_to_target(data, stream_index, timestamp, codec_config)
         
         # Create codec if it doesn't exist
         codec = self.codec_manager.get_codec_for_stream(stream_index)
@@ -124,6 +137,37 @@ class PyAVBackend(ContainerBackend):
                 return packets
         
         return []
+
+    def _encode_directly_to_target(self, data: Any, stream_index: int, timestamp: int, codec_config: Any) -> List[PacketInfo]:
+        """Encode data directly to the target codec format without intermediate rawvideo step"""
+        if stream_index not in self._idx_to_stream:
+            raise ValueError(f"No stream with index {stream_index}")
+        
+        stream = self._idx_to_stream[stream_index]
+        container_encoding = stream.codec_context.codec.name
+        
+        if container_encoding in {"ffv1", "libaom-av1", "libx264", "libx265"}:
+            # Direct video encoding
+            if isinstance(data, np.ndarray) and len(data.shape) >= 2:
+                frame = self._create_frame(data, stream)
+                frame.time_base = stream.time_base
+                frame.pts = timestamp
+                frame.dts = timestamp
+                
+                packets = []
+                for pkt in stream.encode(frame):  # type: ignore[attr-defined]
+                    packets.append(PacketInfo(
+                        data=bytes(pkt),
+                        pts=pkt.pts,
+                        dts=pkt.dts,
+                        stream_index=stream_index,
+                        time_base=(stream.time_base.numerator, stream.time_base.denominator),
+                        is_keyframe=bool(pkt.is_keyframe) if hasattr(pkt, 'is_keyframe') else False
+                    ))
+                return packets
+        
+        # Fallback to legacy encoding if direct encoding isn't supported
+        return self._legacy_encode_fallback(data, stream_index, timestamp, stream)
     
     def _get_feature_type_from_stream(self, stream: Any) -> Any:
         """Extract feature type information from stream metadata"""
@@ -612,12 +656,15 @@ class PyAVBackend(ContainerBackend):
                 f"Got shape {image_array.shape}."
             )
 
-        # Create RGB frame and convert to YUV420p when required.
-        if encoding in {"libaom-av1", "ffv1", "libx264", "libx265"}:
-            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
-            frame = frame.reformat(format="yuv420p")
-        else:
-            frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
+        # Create RGB frame
+        frame = av.VideoFrame.from_ndarray(image_array, format="rgb24")
+        
+        # Get the configured pixel format for this stream
+        configured_pix_fmt = stream.pix_fmt
+        
+        # Convert to the configured pixel format if different from RGB24
+        if configured_pix_fmt and configured_pix_fmt != "rgb24":
+            frame = frame.reformat(format=configured_pix_fmt)
 
         return frame 
 
@@ -770,3 +817,99 @@ class PyAVBackend(ContainerBackend):
         except Exception as e:
             logger.error(f"Failed to transcode internal codec: {e}")
             return False 
+
+    def create_streams_for_batch_data(
+        self,
+        sample_data: Dict[str, Any],
+        codec_config: Any,
+        feature_name_separator: str = "/"
+    ) -> Dict[str, int]:
+        """Create optimized streams for batch data processing.
+        
+        Analyzes sample data to determine optimal codec for each feature
+        and creates streams with target codec directly.
+        
+        Args:
+            sample_data: Sample data dict to analyze feature types
+            codec_config: Codec configuration
+            feature_name_separator: Separator for nested feature names
+            
+        Returns:
+            Dict mapping feature names to stream indices
+        """
+        if self.container is None:
+            raise RuntimeError("Container not opened")
+        
+        from robodm.utils.flatten import _flatten_dict
+        from robodm import FeatureType
+        
+        # Flatten the sample data
+        flattened_data = _flatten_dict(sample_data, sep=feature_name_separator)
+        
+        feature_to_stream_idx = {}
+        
+        for feature_name, sample_value in flattened_data.items():
+            # Determine feature type from sample
+            feature_type = FeatureType.from_data(sample_value)
+            
+            # Determine optimal codec for this feature
+            target_codec = codec_config.get_codec_for_feature(feature_type, feature_name)
+            container_codec = codec_config.get_container_codec(target_codec)
+            
+            # Create stream with target codec directly
+            stream = self.add_stream_for_feature(
+                feature_name=feature_name,
+                feature_type=feature_type,
+                codec_config=codec_config,
+                encoding=container_codec
+            )
+            
+            feature_to_stream_idx[feature_name] = stream.index
+            
+            logger.debug(f"Created stream for '{feature_name}' with codec '{container_codec}' (target: '{target_codec}')")
+        
+        return feature_to_stream_idx
+
+    def encode_batch_data_directly(
+        self,
+        data_batch: List[Dict[str, Any]],
+        feature_to_stream_idx: Dict[str, int],
+        codec_config: Any,
+        feature_name_separator: str = "/",
+        fps: int = 10
+    ) -> None:
+        """Encode a batch of data directly to target codecs without intermediate transcoding.
+        
+        Args:
+            data_batch: List of data dictionaries
+            feature_to_stream_idx: Mapping of feature names to stream indices
+            codec_config: Codec configuration
+            feature_name_separator: Separator for nested feature names
+            fps: Frames per second for timestamp calculation
+        """
+        from robodm.utils.flatten import _flatten_dict
+        
+        time_interval_ms = 1000 / fps
+        current_timestamp = 0
+        
+        for step_data in data_batch:
+            flattened_data = _flatten_dict(step_data, sep=feature_name_separator)
+            
+            for feature_name, value in flattened_data.items():
+                if feature_name in feature_to_stream_idx:
+                    stream_idx = feature_to_stream_idx[feature_name]
+                    
+                    # Encode directly to target format
+                    packet_infos = self.encode_data_to_packets(
+                        data=value,
+                        stream_index=stream_idx,
+                        timestamp=int(current_timestamp),
+                        codec_config=codec_config,
+                        force_direct_encoding=True
+                    )
+                    
+                    # Mux packets immediately
+                    for packet_info in packet_infos:
+                        self.mux_packet_info(packet_info)
+            
+            current_timestamp += time_interval_ms 

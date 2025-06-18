@@ -64,10 +64,17 @@ class CodecConfig:
             # AV1 also typically requires even dimensions for yuv420p
             if height % 2 != 0 or width % 2 != 0:
                 return False
+        elif codec_name == "ffv1":
+            # FFV1 can handle odd dimensions but requires minimal size
+            if height < 2 or width < 2:
+                return False
 
         # Test if the codec actually supports this resolution
-        return CodecConfig.is_codec_config_supported(width, height, "yuv420p",
-                                                     codec_name)
+        # For FFV1, test with rgb24 instead of yuv420p
+        if codec_name == "ffv1":
+            return CodecConfig.is_codec_config_supported(width, height, "rgb24", codec_name)
+        else:
+            return CodecConfig.is_codec_config_supported(width, height, "yuv420p", codec_name)
 
     @staticmethod
     def is_image_codec(codec_name: str) -> bool:
@@ -370,14 +377,16 @@ class CodecConfig:
         if codec in self.IMAGE_CODEC_CONFIGS:
             base_format = self.IMAGE_CODEC_CONFIGS[codec].get("pixel_format")
             
-            # For FFV1, adjust pixel format based on data type
-            if codec == "ffv1" and feature_type.dtype == "uint8":
+            # For FFV1, use RGB24 to avoid YUV conversion issues
+            if codec == "ffv1":
                 data_shape = feature_type.shape
                 if data_shape is not None and len(data_shape) == 3:
                     if data_shape[2] == 3:  # RGB
                         return "rgb24"
                     elif data_shape[2] == 4:  # RGBA
                         return "rgba"
+                # Fallback to rgb24 for any other FFV1 case
+                return "rgb24"
             
             return base_format
         

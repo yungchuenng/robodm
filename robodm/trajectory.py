@@ -647,6 +647,7 @@ class Trajectory(TrajectoryInterface):
         data: Any,
         timestamp: Optional[int] = None,
         time_unit: Optional[str] = None,
+        force_direct_encoding: bool = False,
     ) -> None:
         """
         add one value to container file
@@ -656,6 +657,7 @@ class Trajectory(TrajectoryInterface):
             data (Any): value associated with the feature; except dictionary
             timestamp (optional int): timestamp value. If not provided, the current time is used.
             time_unit (optional str): time unit of the timestamp. If not provided, uses trajectory default.
+            force_direct_encoding (bool): If True, encode directly to target codec instead of rawvideo intermediate step.
 
         Examples:
             >>> trajectory.add('feature1', 'image1.jpg')
@@ -687,12 +689,20 @@ class Trajectory(TrajectoryInterface):
         # check if the feature is already in the container
         # if not, create a new stream
         # Check if the feature is already in the container
-        # here we enforce rawvideo encoding for all features
-        # later on the compacting step, we will encode the pickled data to images
         stream_idx = self.backend.stream_exists_by_feature(feature)
         if stream_idx is None:
             logger.debug(f"Creating new stream for feature: {feature}")
-            self._on_new_stream(feature, "rawvideo", feature_type)
+            # Determine encoding based on whether we want direct encoding
+            if force_direct_encoding:
+                # Get the optimal codec for this feature type
+                target_codec = self.codec_config.get_codec_for_feature(feature_type, feature)
+                container_codec = self.codec_config.get_container_codec(target_codec)
+                encoding = container_codec
+            else:
+                # Use rawvideo for intermediate encoding (legacy behavior)
+                encoding = "rawvideo"
+            
+            self._on_new_stream(feature, encoding, feature_type)
             stream_idx = self.backend.stream_exists_by_feature(feature)
             if stream_idx is None:
                 raise RuntimeError(f"Failed to create stream for feature {feature}")
@@ -714,6 +724,7 @@ class Trajectory(TrajectoryInterface):
             stream_index=stream_idx,
             timestamp=validated_timestamp,
             codec_config=self.codec_config,
+            force_direct_encoding=force_direct_encoding,
         )
         logger.debug(f"Generated {len(packet_infos)} packet infos")
 
@@ -728,6 +739,7 @@ class Trajectory(TrajectoryInterface):
         data: Dict[str, Any],
         timestamp: Optional[int] = None,
         time_unit: Optional[str] = None,
+        force_direct_encoding: bool = False,
     ) -> None:
         """
         add one value to container file
@@ -738,6 +750,7 @@ class Trajectory(TrajectoryInterface):
             timestamp (optional int): timestamp value. If not provided, the current time is used.
             time_unit (optional str): time unit of the timestamp. If not provided, uses trajectory default.
                 assume the timestamp is same for all the features within the dictionary
+            force_direct_encoding (bool): If True, encode directly to target codec instead of rawvideo intermediate step.
 
         Examples:
             >>> trajectory.add_by_dict({'feature1': 'image1.jpg'})
@@ -760,7 +773,7 @@ class Trajectory(TrajectoryInterface):
             validated_timestamp = self.time_manager.convert_units(timestamp, time_unit, "ms")
 
         for feature, value in _flatten_dict_data.items():
-            self.add(feature, value, validated_timestamp, "ms")
+            self.add(feature, value, validated_timestamp, "ms", force_direct_encoding=force_direct_encoding)
 
     @classmethod
     def from_list_of_dicts(
@@ -792,21 +805,44 @@ class Trajectory(TrajectoryInterface):
 
         trajectory = Trajectory.from_list_of_dicts(original_trajectory, path="/tmp/robodm/output.vla")
         """
+        if not data:
+            raise ValueError("Data list cannot be empty")
+        
         traj = cls(path,
                    mode="w",
                    video_codec=video_codec,
                    codec_options=codec_options,
                    visualization_feature=visualization_feature,
                    raw_codec=raw_codec)
-        logger.info(
-            f"Creating a new trajectory file at {path} with {len(data)} steps")
         
-        time_interval_ms = 1000 / fps
-        current_timestamp = 0
-        for step in data:
-            traj.add_by_dict(step, current_timestamp, time_unit="ms")
-            current_timestamp += time_interval_ms
-        traj.close()
+        logger.info(f"Creating a new trajectory file at {path} with {len(data)} steps using direct encoding")
+        
+        # Use the new backend method for efficient batch processing
+        sample_data = data[0]  # Use first sample to determine feature types and optimal codecs
+        feature_to_stream_idx = traj.backend.create_streams_for_batch_data(
+            sample_data=sample_data,
+            codec_config=traj.codec_config,
+            feature_name_separator=traj.feature_name_separator
+        )
+        
+        # Update feature type tracking for consistency
+        from robodm.utils.flatten import _flatten_dict
+        flattened_sample = _flatten_dict(sample_data, sep=traj.feature_name_separator)
+        for feature_name, sample_value in flattened_sample.items():
+            feature_type = FeatureType.from_data(sample_value)
+            traj.feature_name_to_feature_type[feature_name] = feature_type
+        
+        # Encode all data directly to target codecs
+        traj.backend.encode_batch_data_directly(
+            data_batch=data,
+            feature_to_stream_idx=feature_to_stream_idx,
+            codec_config=traj.codec_config,
+            feature_name_separator=traj.feature_name_separator,
+            fps=fps
+        )
+        
+        # Close without transcoding since we encoded directly to target formats
+        traj.close(compact=False)
         return traj
 
     @classmethod
@@ -844,36 +880,59 @@ class Trajectory(TrajectoryInterface):
 
         trajectory = Trajectory.from_dict_of_lists(original_trajectory, path="/tmp/robodm/output.vla")
         """
-        traj = cls(
-            path,
-            feature_name_separator=feature_name_separator,
-            mode="w",
-            video_codec=video_codec,
-            codec_options=codec_options,
-            visualization_feature=visualization_feature,
-            raw_codec=raw_codec,
-        )
-        time_interval_ms = 1000 / fps
-        current_timestamp = 0
-        # flatten the data such that all data starts and put feature name with separator
-        _flatten_dict_data = _flatten_dict(data,
-                                           sep=traj.feature_name_separator)
-
+        from robodm.utils.flatten import _flatten_dict
+        
+        # Flatten the data and validate
+        flattened_dict_data = _flatten_dict(data, sep=feature_name_separator)
+        
         # Check if all lists have the same length
-        list_lengths = [len(v) for v in _flatten_dict_data.values()]
+        list_lengths = [len(v) for v in flattened_dict_data.values()]
         if len(set(list_lengths)) != 1:
             raise ValueError(
                 "All lists must have the same length",
-                [(k, len(v)) for k, v in _flatten_dict_data.items()],
+                [(k, len(v)) for k, v in flattened_dict_data.items()],
             )
+        
+        if not list_lengths or list_lengths[0] == 0:
+            raise ValueError("Data lists cannot be empty")
+        
+        # Convert dict of lists to list of dicts for batch processing
+        num_steps = list_lengths[0]
+        list_of_dicts = []
+        for i in range(num_steps):
+            step = {}
+            for feature_name, feature_values in flattened_dict_data.items():
+                # Reconstruct nested structure if needed
+                step = cls._set_nested_value(step, feature_name, feature_values[i], feature_name_separator)
+            list_of_dicts.append(step)
+        
+        # Use the optimized from_list_of_dicts method
+        return cls.from_list_of_dicts(
+            data=list_of_dicts,
+            path=path,
+            video_codec=video_codec,
+            codec_options=codec_options,
+            visualization_feature=visualization_feature,
+            fps=fps,
+            raw_codec=raw_codec
+        )
 
-        for i in range(list_lengths[0]):
-            step = {k: v[i] for k, v in _flatten_dict_data.items()}
-            traj.add_by_dict(step, current_timestamp, time_unit="ms")
-            current_timestamp += time_interval_ms
-        traj.close()
-        return traj
-    
+    @staticmethod
+    def _set_nested_value(data_dict: Dict[str, Any], key_path: str, value: Any, separator: str) -> Dict[str, Any]:
+        """Helper method to set a nested value in a dictionary using a key path."""
+        keys = key_path.split(separator)
+        current = data_dict
+        
+        # Navigate to the parent of the target key
+        for key in keys[:-1]:
+            if key not in current:
+                current[key] = {}
+            current = current[key]
+        
+        # Set the final value
+        current[keys[-1]] = value
+        return data_dict
+
     def _transcode_by_feature_type(self):
         """
         Intelligently decide whether to transcode images or raw bytes based on feature types.
