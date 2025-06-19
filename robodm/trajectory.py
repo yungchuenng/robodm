@@ -783,7 +783,7 @@ class Trajectory(TrajectoryInterface):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
-        fps: Optional[int] = 10,
+        fps: Optional[Union[int, Dict[str, int]]] = 10,
         raw_codec: Optional[str] = None,
     ) -> "Trajectory":
         """
@@ -795,6 +795,7 @@ class Trajectory(TrajectoryInterface):
             video_codec (str, optional): Video codec to use for video/image features. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
             visualization_feature: Optional feature name to prioritize as first stream for visualization.
+            fps: Optional fps for features. Can be an int (same fps for all features) or Dict[str, int] (per-feature fps).
             raw_codec (str, optional): Raw codec to use for non-image features. Defaults to None.
 
         Example:
@@ -822,7 +823,8 @@ class Trajectory(TrajectoryInterface):
         feature_to_stream_idx = traj.backend.create_streams_for_batch_data(
             sample_data=sample_data,
             codec_config=traj.codec_config,
-            feature_name_separator=traj.feature_name_separator
+            feature_name_separator=traj.feature_name_separator,
+            visualization_feature=visualization_feature
         )
         
         # Update feature type tracking for consistency
@@ -854,7 +856,7 @@ class Trajectory(TrajectoryInterface):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
-        fps: Optional[int] = 10,
+        fps: Optional[Union[int, Dict[str, int]]] = 10,
         raw_codec: Optional[str] = None,
     ) -> "Trajectory":
         """
@@ -867,6 +869,7 @@ class Trajectory(TrajectoryInterface):
             video_codec (str, optional): Video codec to use for video/image features. Defaults to "auto".
             codec_options (Dict[str, Any], optional): Additional codec-specific options.
             visualization_feature: Optional feature name to prioritize as first stream for visualization.
+            fps: Optional fps for features. Can be an int (same fps for all features) or Dict[str, int] (per-feature fps).
             raw_codec (str, optional): Raw codec to use for non-image features. Defaults to None.
 
         Returns:

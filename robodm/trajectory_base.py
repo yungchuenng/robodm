@@ -97,7 +97,7 @@ class TrajectoryInterface(ABC):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
-        fps: Optional[int] = 10,
+        fps: Optional[Union[int, Dict[str, int]]] = 10,
         raw_codec: Optional[str] = None,
     ) -> "TrajectoryInterface":
         """
@@ -124,7 +124,7 @@ class TrajectoryInterface(ABC):
         video_codec: str = "auto",
         codec_options: Optional[Dict[str, Any]] = None,
         visualization_feature: Optional[Text] = None,
-        fps: Optional[int] = 10,
+        fps: Optional[Union[int, Dict[str, int]]] = 10,
         raw_codec: Optional[str] = None,
     ) -> "TrajectoryInterface":
         """

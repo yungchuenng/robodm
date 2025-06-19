@@ -16,7 +16,7 @@ import os
 import pickle
 import logging
 from fractions import Fraction
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 
 import av
 import numpy as np
@@ -822,17 +822,20 @@ class PyAVBackend(ContainerBackend):
         self,
         sample_data: Dict[str, Any],
         codec_config: Any,
-        feature_name_separator: str = "/"
+        feature_name_separator: str = "/",
+        visualization_feature: Optional[str] = None
     ) -> Dict[str, int]:
         """Create optimized streams for batch data processing.
         
         Analyzes sample data to determine optimal codec for each feature
-        and creates streams with target codec directly.
+        and creates streams with target codec directly. Respects visualization_feature
+        ordering to prioritize visualization streams first.
         
         Args:
             sample_data: Sample data dict to analyze feature types
             codec_config: Codec configuration
             feature_name_separator: Separator for nested feature names
+            visualization_feature: Optional feature name to prioritize as first stream for visualization
             
         Returns:
             Dict mapping feature names to stream indices
@@ -846,9 +849,30 @@ class PyAVBackend(ContainerBackend):
         # Flatten the sample data
         flattened_data = _flatten_dict(sample_data, sep=feature_name_separator)
         
+        # Sort features to prioritize visualization feature
+        def get_feature_priority(item):
+            feature_name, sample_value = item
+            
+            # Highest priority: specified visualization_feature
+            if visualization_feature and feature_name == visualization_feature:
+                return (0, feature_name)
+            
+            # Second priority: features that will become video-encoded (images/visualizations)
+            feature_type = FeatureType.from_data(sample_value)
+            target_codec = codec_config.get_codec_for_feature(feature_type, feature_name)
+            container_codec = codec_config.get_container_codec(target_codec)
+            if container_codec in {"ffv1", "libaom-av1", "libx264", "libx265"}:
+                return (1, feature_name)
+            
+            # Third priority: everything else
+            return (2, feature_name)
+        
+        # Sort features by priority
+        sorted_features = sorted(flattened_data.items(), key=get_feature_priority)
+        
         feature_to_stream_idx = {}
         
-        for feature_name, sample_value in flattened_data.items():
+        for feature_name, sample_value in sorted_features:
             # Determine feature type from sample
             feature_type = FeatureType.from_data(sample_value)
             
@@ -866,7 +890,7 @@ class PyAVBackend(ContainerBackend):
             
             feature_to_stream_idx[feature_name] = stream.index
             
-            logger.debug(f"Created stream for '{feature_name}' with codec '{container_codec}' (target: '{target_codec}')")
+            logger.debug(f"Created stream for '{feature_name}' with codec '{container_codec}' (target: '{target_codec}') at index {stream.index}")
         
         return feature_to_stream_idx
 
@@ -876,7 +900,7 @@ class PyAVBackend(ContainerBackend):
         feature_to_stream_idx: Dict[str, int],
         codec_config: Any,
         feature_name_separator: str = "/",
-        fps: int = 10
+        fps: Union[int, Dict[str, int]] = 10
     ) -> None:
         """Encode a batch of data directly to target codecs without intermediate transcoding.
         
@@ -885,12 +909,32 @@ class PyAVBackend(ContainerBackend):
             feature_to_stream_idx: Mapping of feature names to stream indices
             codec_config: Codec configuration
             feature_name_separator: Separator for nested feature names
-            fps: Frames per second for timestamp calculation
+            fps: Frames per second for timestamp calculation. Can be an int (same fps for all features) or Dict[str, int] (per-feature fps)
         """
         from robodm.utils.flatten import _flatten_dict
         
-        time_interval_ms = 1000 / fps
-        current_timestamp = 0
+        # Handle fps parameter - can be int or dict
+        if isinstance(fps, int):
+            # Use same fps for all features
+            default_fps = fps
+            feature_fps = {}
+        else:
+            # Per-feature fps specified
+            feature_fps = fps
+            default_fps = 10  # Fallback default
+        
+        # Initialize per-feature timestamps and time intervals
+        feature_timestamps = {}
+        feature_time_intervals = {}
+        
+        # Get all feature names from first sample to initialize timestamps
+        if data_batch:
+            first_sample = _flatten_dict(data_batch[0], sep=feature_name_separator)
+            for feature_name in first_sample.keys():
+                if feature_name in feature_to_stream_idx:
+                    fps_for_feature = feature_fps.get(feature_name, default_fps)
+                    feature_timestamps[feature_name] = 0
+                    feature_time_intervals[feature_name] = 1000.0 / fps_for_feature
         
         for step_data in data_batch:
             flattened_data = _flatten_dict(step_data, sep=feature_name_separator)
@@ -898,6 +942,9 @@ class PyAVBackend(ContainerBackend):
             for feature_name, value in flattened_data.items():
                 if feature_name in feature_to_stream_idx:
                     stream_idx = feature_to_stream_idx[feature_name]
+                    
+                    # Get current timestamp for this feature
+                    current_timestamp = feature_timestamps.get(feature_name, 0)
                     
                     # Encode directly to target format
                     packet_infos = self.encode_data_to_packets(
@@ -911,5 +958,7 @@ class PyAVBackend(ContainerBackend):
                     # Mux packets immediately
                     for packet_info in packet_infos:
                         self.mux_packet_info(packet_info)
-            
-            current_timestamp += time_interval_ms 
+                    
+                    # Update timestamp for this feature
+                    time_interval = feature_time_intervals.get(feature_name, 1000.0 / default_fps)
+                    feature_timestamps[feature_name] = current_timestamp + time_interval 
