@@ -346,7 +346,6 @@ class CodecConfig:
             cc.pix_fmt = pix_fmt
             cc.time_base = Fraction(1, 30)
             cc.open(strict=True)
-            cc.close()
             return True
         except Exception:
             return False
