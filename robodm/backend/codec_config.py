@@ -36,7 +36,7 @@ class CodecConfig:
             cc.pix_fmt = pix_fmt
             cc.time_base = Fraction(1, 30)
             cc.open(strict=True)
-            cc.close()
+
             return True
         except Exception:
             return False
@@ -68,7 +68,7 @@ class CodecConfig:
             # FFV1 can handle odd dimensions but requires minimal size
             if height < 2 or width < 2:
                 return False
-
+        
         # Test if the codec actually supports this resolution
         # For FFV1, test with rgb24 instead of yuv420p
         if codec_name == "ffv1":

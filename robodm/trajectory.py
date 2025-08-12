@@ -52,6 +52,7 @@ class TimeManager:
     - Unit conversions
     - Per-timestep timing from base datetime
     """
+    from fractions import Fraction
 
     # Time unit conversion factors to nanoseconds
     TIME_UNITS = {
@@ -320,6 +321,7 @@ class StreamInfo:
         return self.__str__()
 
 
+'''
 class CodecConfig:
     """Configuration class for video codec settings."""
 
@@ -512,7 +514,7 @@ class CodecConfig:
         options = codec_config.get("options", {}).copy()
         options.update(self.custom_options)
         return options
-
+'''
 
 class Trajectory(TrajectoryInterface):
 
