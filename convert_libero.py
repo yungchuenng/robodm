@@ -3,9 +3,6 @@ import numpy as np
 import robodm
 from datasets import load_dataset
 
-ds = load_dataset("IPEC-COMMUNITY/libero_90_no_noops_lerobot", split="train")
-trajectory = robodm.Trajectory(path="/tmp/libero_full.vla", mode="w", video_codec="libx265")
-
 def get_chunk_folder(episode_index):
     if 0 <= episode_index <= 999:
         return "chunk-000"
@@ -52,6 +49,9 @@ def read_frame(cap, frame_idx):
         raise RuntimeError(f"Failed to read frame {frame_idx}")
     return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+
+ds = load_dataset("IPEC-COMMUNITY/libero_90_no_noops_lerobot", split="train")
+trajectory = robodm.Trajectory(path="data/libero_90_no_noops_lerobot.vla", mode="w", video_codec="libx265")
 
 for entry in ds:
     ep_idx = entry["episode_index"]

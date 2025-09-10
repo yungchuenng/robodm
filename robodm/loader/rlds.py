@@ -42,9 +42,11 @@ class RLDSLoader(BaseLoader):
         return self
 
     def get_batch(self):
+        ### problematic - need to implement continuation from a certain index onwards
         batch = self.ds.take(self.batch_size)
+        ### problematic
         self.index += self.batch_size
-        if not self.shuffling and self.index >= self.length:
+        if not self.shuffling and self.index > self.length:
             raise StopIteration
         data = []
         for b in batch:
@@ -72,7 +74,7 @@ class RLDSLoader(BaseLoader):
     def __next__(self):
         data = [self._convert_traj_to_numpy(next(self.iterator))]
         self.index += 1
-        if self.index >= self.length:
+        if self.index > self.length:
             raise StopIteration
         return data
 
