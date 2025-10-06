@@ -1,5 +1,6 @@
-
+##### PLEASE DEFINE your own dataset_path in line 19, and in line 174, 215.  #####
 import numpy as np
+# import pyarrow as pa
 import robodm
 from robodm.loader import RLDSLoader
 
@@ -14,8 +15,10 @@ from robodm.loader import RLDSLoader
 # TO-DO: Convert EBML back into LeRobot format
 # TO-DO: How to free up unused RAM?
 
-# dataset_path = "/home/ras/git_pkgs/LIBERO/libero/datasets/openvla/modified_libero_rlds/libero_10_no_noops/1.0.0"
-dataset_path = "/home/ras/git_pkgs/LIBERO/libero/datasets/openvla/modified_libero_rlds/libero_spatial_no_noops/1.0.0"
+##### PLEASE DEFINE your own dataset_path in line 19, and in line 174, 215.  #####
+dataset_path = "/home/ras/git_pkgs/LIBERO/libero/datasets/openvla/modified_libero_rlds/libero_10_no_noops/1.0.0"
+data_type = 'default' # default, pyarrow (required for LeRobot, but robodm unable to process), or numpy
+# dataset_path = "/home/ras/git_pkgs/LIBERO/libero/datasets/openvla/modified_libero_rlds/libero_spatial_no_noops/1.0.0"
 rlds_loader = RLDSLoader(path=dataset_path, split="all", batch_size=1, shuffle_buffer=1,shuffling=False)
 
 ### loads the entire dataset at once - 43 GB memory
@@ -44,6 +47,7 @@ from_metadata = ['action',
 # type(ds[0][0]) = dictionary of format: 
 # image is of shape: (256, 256, 3)
 '''
+### How to know which index in 'action' is what part of robot body?
 {'action': array([ 0.01607143, 0., -0.,  0.,  0., -0., -1.], dtype=float32), 
  'discount': array(1., dtype=float32), 
  'is_first': array(True), 
@@ -170,7 +174,7 @@ if max_ep_length > 100: ep_end = "100"
 else: ep_end = max_ep_length
 
 # Create robodm EBML dataset to save to
-ebml_ds = robodm.Trajectory(path=f"/home/ras/git_pkgs/robodm_yc_fork/data/libero_spatial_no_noops_ep1-{ep_end}.vla", 
+ebml_ds = robodm.Trajectory(path=f"/home/ras/git_pkgs/robodm_yc_fork/data/libero_10_no_noops_ep1-{ep_end}.vla", 
                                 mode="w", 
                                 video_codec="libx265",  # auto
                                 codec_options={
@@ -187,10 +191,10 @@ to_metadata = ['action',
             'is_last',
             'is_terminal',
             'language_instruction',
-            'observation/image',
-            'observation/joint_state',
-            'observation/state',
-            'observation/wrist_image',
+            'observation.image',
+            'observation.joint_state',
+            'observation.state',
+            'observation.wrist_image',
             'reward'
             ]
 
@@ -211,7 +215,7 @@ for index in range(rlds_loader.__len__()):
         # rename file for subsequent dataset according to task interval
         ep_end = index + 100
         if ep_end > max_ep_length: ep_end = max_ep_length
-        ebml_ds = robodm.Trajectory(path=f"/home/ras/git_pkgs/robodm_yc_fork/data/libero_spatial_no_noops_ep{ep_idx}-{ep_end}.vla", 
+        ebml_ds = robodm.Trajectory(path=f"/home/ras/git_pkgs/robodm_yc_fork/data/libero_10_no_noops_ep{ep_idx}-{ep_end}.vla", 
                                 mode="w", 
                                 video_codec="libx265",  # auto
                                 codec_options={
@@ -224,6 +228,34 @@ for index in range(rlds_loader.__len__()):
     for trajectory in episode:
 
         # Add data to the robodm EBML dataset
+        # if data_type == 'default':
+        #     ebml_ds.add("episode_index", np.array(ep_idx, dtype=np.int32).tolist())
+        #     ebml_ds.add(to_metadata[0], np.array(trajectory[from_metadata[0]]).tolist())
+        #     ebml_ds.add(to_metadata[1], np.array(trajectory[from_metadata[1]]).tolist())
+        #     ebml_ds.add(to_metadata[2], np.array(trajectory[from_metadata[2]]).tolist())
+        #     ebml_ds.add(to_metadata[3], np.array(trajectory[from_metadata[3]]).tolist())
+        #     ebml_ds.add(to_metadata[4], np.array(trajectory[from_metadata[4]]).tolist())
+        #     ebml_ds.add(to_metadata[5], np.array(trajectory[from_metadata[5]]).tolist())
+        #     ebml_ds.add(to_metadata[6], np.array(trajectory[from_metadata[6]]['image']).tolist())
+        #     ebml_ds.add(to_metadata[7], np.array(trajectory[from_metadata[6]]['joint_state']).tolist())
+        #     ebml_ds.add(to_metadata[8], np.array(trajectory[from_metadata[6]]['state']).tolist())
+        #     ebml_ds.add(to_metadata[9], np.array(trajectory[from_metadata[6]]['wrist_image']).tolist())
+        #     ebml_ds.add(to_metadata[10], np.array(trajectory[from_metadata[7]]).tolist())
+        ## robodm does not support pyarrow
+        # if data_type == 'pyarrow': 
+        #     ebml_ds.add("episode_index", pa.scalar(ep_idx, type=pa.int32()))
+        #     ebml_ds.add(to_metadata[0], pa.array(trajectory[from_metadata[0]], type=pa.float32()))
+        #     ebml_ds.add(to_metadata[1], pa.scalar(trajectory[from_metadata[1]], type=pa.float32()))
+        #     ebml_ds.add(to_metadata[2], pa.scalar(trajectory[from_metadata[2]], type=pa.bool_()))
+        #     ebml_ds.add(to_metadata[3], pa.scalar(trajectory[from_metadata[3]], type=pa.bool_()))
+        #     ebml_ds.add(to_metadata[4], pa.scalar(trajectory[from_metadata[4]], type=pa.bool_()))
+        #     ebml_ds.add(to_metadata[5], pa.scalar(trajectory[from_metadata[5]], type=pa.string()))
+        #     ebml_ds.add(to_metadata[6], pa.array(trajectory[from_metadata[6]]['image'].tolist()))
+        #     ebml_ds.add(to_metadata[7], pa.array(trajectory[from_metadata[6]]['joint_state']))
+        #     ebml_ds.add(to_metadata[8], pa.array(trajectory[from_metadata[6]]['state']))
+        #     ebml_ds.add(to_metadata[9], pa.array(trajectory[from_metadata[6]]['wrist_image'].tolist()))
+        #     ebml_ds.add(to_metadata[10], pa.scalar(trajectory[from_metadata[7]], type=pa.float32()))
+        # elif data_type == 'numpy':
         ebml_ds.add("episode_index", np.array(ep_idx, dtype=np.int32))
         ebml_ds.add(to_metadata[0], np.array(trajectory[from_metadata[0]]))
         ebml_ds.add(to_metadata[1], np.array(trajectory[from_metadata[1]]))
@@ -236,7 +268,8 @@ for index in range(rlds_loader.__len__()):
         ebml_ds.add(to_metadata[8], np.array(trajectory[from_metadata[6]]['state']))
         ebml_ds.add(to_metadata[9], np.array(trajectory[from_metadata[6]]['wrist_image']))
         ebml_ds.add(to_metadata[10], np.array(trajectory[from_metadata[7]]))
-
+        # else:
+        #     raise ValueError("Data type for saving not specified correctly. Please choose between: 'default' or 'numpy'.")
     try:
         episode = rlds_loader.__next__()[0]
     except:
